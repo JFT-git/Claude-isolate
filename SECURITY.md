@@ -54,3 +54,11 @@ separate publisher identity. No signing certificate is committed or required.
 For a suspected vulnerability, use GitHub's private vulnerability reporting if
 enabled on this repository. Do not put credentials or exploit details against live
 accounts in a public issue. Otherwise open a minimal issue requesting private contact.
+
+## Reviewed scanner false positives
+
+The two Mozilla Firefox/Ubuntu advisory mismatches documented in
+[the Firefox review](docs/security-review-firefox.md) have exact-version PURL
+exceptions expiring 2026-11-01. These apply only to the guest gate. Raw unfiltered
+findings and the applied review are retained alongside the filtered report.
+All other HIGH/CRITICAL findings and scanner failures continue to block releases.

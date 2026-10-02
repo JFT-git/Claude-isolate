@@ -1,0 +1,22 @@
+# Exact-version, expiring false-positive review. Never apply to other packages/CVEs.
+# Evidence and scope: docs/security-review-firefox.md
+vulnerabilities:
+  - id: CVE-2022-25235
+    purls:
+      - "pkg:deb/ubuntu/firefox@157.0~build1"
+    expired_at: 2026-11-01
+    statement: >-
+      Mozilla upstream Bug 1754724 comment 14: Firefox does not use Expat in
+      UTF-8 mode. Trivy incorrectly compares the Mozilla APT build against
+      Ubuntu's 1:1snap1-0ubuntu1 transitional package. Exact reviewed version
+      only; raw scan remains archived. See docs/security-review-firefox.md.
+  - id: CVE-2022-25236
+    purls:
+      - "pkg:deb/ubuntu/firefox@157.0~build1"
+    expired_at: 2026-11-01
+    statement: >-
+      Mozilla upstream Bug 1754724 comments 3 and 22: Firefox's namespace
+      separator/configuration is not affected; upstream also took defensive
+      fixes. Ubuntu Snap transition version does not describe Mozilla's APT
+      release. Exact reviewed version only; raw evidence remains archived.
+      See docs/security-review-firefox.md.
