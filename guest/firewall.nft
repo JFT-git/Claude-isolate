@@ -1,3 +1,6 @@
+# Replace only our table, atomically, on first install and every retry.
+add table inet claude_isolation
+delete table inet claude_isolation
 table inet claude_isolation {
   chain input {
     type filter hook input priority -10; policy drop;

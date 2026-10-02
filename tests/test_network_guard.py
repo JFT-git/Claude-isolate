@@ -69,6 +69,12 @@ class GuardTests(unittest.TestCase):
     def test_route_event_closes_active_connection(self):
         self.check_active_connection_closes("route")
 
+    def test_stop_marker_closes_active_connection(self):
+        self.check_active_connection_closes("stop")
+
+    def test_expired_permission_closes_active_connection(self):
+        self.check_active_connection_closes("expiry")
+
     def check_active_connection_closes(self, trigger):
         # Local fake HTTP proxy; no real VPN or external service is used.
         with tempfile.TemporaryDirectory() as directory, socket.socket() as server:
@@ -89,7 +95,8 @@ class GuardTests(unittest.TestCase):
             worker.start()
             lease = Path(directory) / 'lease.json'
             guard.publish(lease, guard.classify({'ip': '8.8.8.8', 'country': 'US'}))
-            env = dict(os.environ, CLAUDE_NETWORK_LEASE=str(lease))
+            external = Path(directory) / 'external.revoked'
+            env = dict(os.environ, CLAUDE_NETWORK_LEASE=str(lease), CLAUDE_NETWORK_REVOKE=str(external))
             proc = subprocess.Popen([sys.executable, str(environment.ROOT / 'environment.py'),
                                      'relay', '--port', str(server.getsockname()[1])],
                                     env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -117,6 +124,14 @@ class GuardTests(unittest.TestCase):
                     finally:
                         watcher.close()
                         sender.close()
+                elif trigger == 'stop':
+                    external.touch()
+                    self.assertTrue(closed.wait(1))
+                elif trigger == 'expiry':
+                    expired = json.loads(lease.read_text())
+                    expired.update(expires=time.monotonic() - 1, wall_expires=time.time() - 1)
+                    lease.write_text(json.dumps(expired))
+                    self.assertTrue(closed.wait(1))
                 else:
                     policy = guard.SessionPolicy(guard.classify({'ip': '8.8.8.8', 'country': 'US'}))
                     guard.publish(lease, policy.evaluate(guard.classify({'ip': '1.1.1.1', 'country': 'NL'})))

@@ -38,6 +38,7 @@ def update(channel, properties):
         parent.set('type', kind)
         parent.set('value', value)
     ET.ElementTree(root).write(path, encoding='UTF-8', xml_declaration=True)
+update('xfwm4', [('general/use_compositing', 'bool', 'false')])
 update('xsettings', [('Xft/DPI', 'int', '144'), ('Xft/Antialias', 'int', '1'),
                       ('Xft/Hinting', 'int', '1'), ('Xft/HintStyle', 'string', 'hintslight')])
 PY

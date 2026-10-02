@@ -30,11 +30,20 @@ Homebrew, Python 3.12, QEMU и GnuPG устанавливаются при не�
 Homebrew.pkg проверяется средствами macOS; при его установке возможен системный
 запрос пароля администратора. Затем загружается Ubuntu 24.04, проверяются подпись
 закреплённого ключа Ubuntu и SHA256, создаётся отдельный диск до 64 ГБ.
-Для VM по умолчанию выделены 8 ГБ RAM и 4 CPU.
+По умолчанию используется экономный режим: **3 ГБ RAM и 2 CPU**.
+В контроллере можно выбрать стандартный режим **6 ГБ / 4 CPU**, предварительно
+остановив среду. Старые настройки ресурсов сохраняются до выбора нового режима.
+Для хоста разумно иметь не менее 8 ГБ RAM; множество вкладок и тяжёлые проекты
+потребуют больше памяти. 64 ГБ — предельный размер разреженного диска, а не
+место, занимаемое сразу. Лёгкий XFCE устанавливается без набора лишних драйверов,
+композитор отключён, установочный кэш очищается и свободные блоки возвращаются
+хосту через TRIM. Образ Ubuntu после успешной подготовки удаляется.
 
-Рядом с `.app` появляется **Claude Environment Data**. Не удаляйте её:
-там находятся файлы гостя и сеансы входа. Перенос существующей среды потребует
-обновить абсолютные пути в её `environment.json`.
+Новая среда хранится в `~/Library/Application Support/Claude Environment`,
+поэтому приложение можно установить в Applications. Если рядом с `.app` уже есть
+**Claude Environment Data/environment.json**, продолжает использоваться эта
+папка. Не удаляйте данные: там находятся файлы гостя и сеансы входа. Перенос
+существующей среды потребует обновить абсолютные пути в `environment.json`.
 
 Сборки имеют локальную ad-hoc подпись, **без Apple Developer ID и notarization**.
 Gatekeeper может потребовать разрешение на открытие в настройках macOS.
@@ -146,7 +155,7 @@ python3 environment.py start
 python3 -m unittest discover -s tests -v
 python3 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-security.txt
-.venv/bin/bandit -r environment.py network_guard.py network_transport.py route_guard.py macos scripts -ll
+.venv/bin/bandit -r environment.py network_guard.py network_transport.py route_guard.py ubuntu_image.py session_lock.py macos scripts -ll
 .venv/bin/pip-audit --strict --disable-pip --no-deps -r requirements-security.txt
 ```
 
@@ -157,3 +166,19 @@ python3 -m venv .venv
 Документация инструментов: [GitHub runners](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
 [CodeQL](https://docs.github.com/en/code-security/reference/code-scanning/workflow-configuration-options),
 [Trivy](https://trivy.dev/docs/latest/scanner/vulnerability/).
+
+## Проверка чистой установки
+
+Опциональный интеграционный тест создаёт **новую** VM, ставит настоящий рабочий
+стол, запускает Claude и Firefox без аккаунтов, проверяет прямые/проксированные
+соединения, повторное применение firewall и раскладку клавиатуры. Требуются
+зависимости QEMU и рабочий VPN/разрешённый выход. Путь должен отсутствовать:
+
+```sh
+python3 scripts/integration_vm.py --data /absolute/path/to/new-audit-vm
+```
+
+Результат — `result.json`, `boot.log` и `launcher.log` в тестовой папке.
+Тест не отключает VPN и не меняет маршруты хоста. После успешного теста гостевая
+система выключается. Этот тест запускается вручную; обычная матрица CI проверяет
+ядро, сборки и безопасность, но не заменяет запуск VM на каждой платформе.

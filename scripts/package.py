@@ -31,7 +31,8 @@ def package(target, output):
             'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
             'distribution': 'source CLI; Windows is a development preview, not a verified VM runtime',
         }, indent=2))
-    digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest()
+    with archive.open('rb') as source:
+        digest = hashlib.file_digest(source, 'sha256').hexdigest()
     archive.with_suffix('.zip.sha256').write_text(f'{digest}  {archive.name}\n')
     print(archive)
 

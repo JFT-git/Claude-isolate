@@ -4,12 +4,21 @@ import socket
 import time
 
 
+def public_address(value):
+    """is_global alone includes multicast, which is not an Internet endpoint."""
+    try:
+        address = ipaddress.ip_address(value)
+        return address.is_global and not address.is_multicast and not address.is_reserved
+    except (ValueError, TypeError):
+        return False
+
+
 def open_public(host, port, timeout=3):
     # IPv4 only, consistently for both guest traffic and the IP check.
     # Resolve once, validate, then connect to that exact address: no second
     # DNS lookup that could turn a public hostname into a local destination.
     addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
-    if not addresses or any(not ipaddress.ip_address(a[4][0]).is_global for a in addresses):
+    if not addresses or any(not public_address(a[4][0]) for a in addresses):
         raise OSError('Destination resolves to a local/non-public address')
     deadline = time.monotonic() + timeout
     error = None

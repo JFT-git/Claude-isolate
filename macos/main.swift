@@ -11,20 +11,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var vmProcess: Process?
     var startButton: NSButton!
     var restartButton: NSButton!
+    var resourcePicker: NSPopUpButton!
     var timer: Timer?
     var busy = false
     var attemptedSetup = false
     var pendingChecks = Set<String>()
     let dataURL: URL = {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--data"), index + 1 < arguments.count {
+            return URL(fileURLWithPath: (arguments[index + 1] as NSString).expandingTildeInPath)
+        }
         let output = Bundle.main.bundleURL.deletingLastPathComponent()
-        return output.appendingPathComponent("Claude Environment Data", isDirectory: true)
+        let legacy = output.appendingPathComponent("Claude Environment Data", isDirectory: true)
+        if FileManager.default.fileExists(atPath: legacy.appendingPathComponent("environment.json").path) {
+            return legacy
+        }
+        // Applications and Gatekeeper translocation paths may be read-only.
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Claude Environment", isDirectory: true)
     }()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 700),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "Claude Environment"
-        window.minSize = NSSize(width: 720, height: 600)
+        window.minSize = NSSize(width: 720, height: 680)
         window.collectionBehavior = [.fullScreenPrimary]
         window.setFrameAutosaveName("ClaudeEnvironmentWindow")
         window.center()
@@ -62,6 +73,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             buttons.addArrangedSubview(button)
         }
         stack.addArrangedSubview(buttons)
+        resourcePicker = NSPopUpButton()
+        resourcePicker.addItems(withTitles: ["Экономный — 3 ГБ памяти, 2 CPU", "Стандартный — 6 ГБ памяти, 4 CPU"])
+        resourcePicker.target = self
+        resourcePicker.action = #selector(changeResources)
+        resourcePicker.isEnabled = false
+        stack.addArrangedSubview(resourcePicker)
         let note = NSTextField(wrappingLabelWithString:
             "Включите системный VPN перед запуском. Изменения маршрутов macOS отслеживаются сразу; внешний IP проверяется отдельно. Сетевые события вызывают перепроверку; смена внешнего IP закрывает доступ до перезапуска. Все компоненты устанавливаются автоматически. При первой установке macOS может запросить пароль администратора. Это экспериментальная версия; Cowork не проверен.")
         note.font = .systemFont(ofSize: 12)
@@ -86,7 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         run("status")
         checkNetwork()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             guard let self = self, !self.busy else { return }
             self.run("status")
         }
@@ -125,6 +142,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if (action == "start" || action == "restart"), event["running"] as? Bool == true { busy = false }
             if let ready = event["ready"] as? Bool {
                 let running = event["running"] as? Bool == true
+                resourcePicker.isEnabled = !busy && !running && vmProcess == nil
+                if let memory = event["memory_mb"] as? Int {
+                    resourcePicker.selectItem(at: memory <= 3072 ? 0 : 1)
+                }
                 startButton.isEnabled = !busy && !running && vmProcess == nil
                 restartButton.isEnabled = !busy && ready
                 if action == "status", !ready, !running, !attemptedSetup, vmProcess == nil {
@@ -189,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard let self = self else { return }
                     self.processes.removeAll { $0 === process }
                     self.pendingChecks.remove(action)
+                    if action == "economy" || action == "standard" { self.run("status") }
                     if (action == "start" || action == "restart"), self.vmProcess === process {
                         self.vmProcess = nil; self.busy = false
                         self.run("status")
@@ -209,6 +231,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         run("restart")
     }
     @objc func toggleFullScreen() { window.toggleFullScreen(nil) }
+    @objc func changeResources() {
+        resourcePicker.isEnabled = false
+        run(resourcePicker.indexOfSelectedItem == 0 ? "economy" : "standard")
+    }
     @objc func stop() { run("stop") }
     @objc func checkNetwork() { run("country") }
     @objc func openFolder() { NSWorkspace.shared.open(dataURL) }

@@ -8,7 +8,7 @@ import re
 import ssl
 import time
 import threading
-from network_transport import open_public
+from network_transport import open_public, public_address
 
 LEASE_SECONDS = 6
 CHECK_INTERVAL = 2
@@ -22,9 +22,9 @@ def classify(data):
     country = data.get('country_code', data.get('country'))
     try:
         addr = ipaddress.ip_address(data.get('ip', ''))
-    except ValueError:
+    except (ValueError, TypeError):
         return {'allowed': False, 'reason': 'Missing or invalid external IP'}
-    if not addr.is_global or not isinstance(country, str) or country not in COUNTRIES:
+    if not public_address(addr) or not isinstance(country, str) or country not in COUNTRIES:
         return {'allowed': False, 'reason': 'Unknown country or non-public IP'}
     return {'allowed': country != 'RU', 'ip': str(addr), 'country': country,
             'reason': 'Russian exit IP' if country == 'RU' else 'Non-Russian exit reported'}
@@ -108,6 +108,8 @@ def permitted(path, now=None):
         return False
     try:
         data = json.loads(Path(path).read_text())
+        if not isinstance(data, dict) or not classify(data).get('allowed'):
+            return False
         expiry = data['expires']
         return (data.get('allowed') is True and data.get('country') in COUNTRIES
                 and data['country'] != 'RU' and type(expiry) in (float, int)

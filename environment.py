@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import socket
+import signal
 import subprocess
 import sys
 sys.dont_write_bytecode = True
@@ -17,8 +18,9 @@ import threading
 import tempfile
 import time
 import network_guard
+from session_lock import exclusive
 from route_guard import RouteWatcher
-from network_transport import open_public
+from network_transport import open_public, public_address
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent
@@ -38,6 +40,22 @@ def allowed_request(header, web_access='services'):
     proxy mode delegates resolution to the configured local proxy.
     """
     try:
+        if len(header) > 32768 or not header.endswith(b'\r\n\r\n'):
+            return False
+        lines = header[:-4].split(b'\r\n')
+        # urlsplit strips some controls; reject them BEFORE parsing to avoid
+        # validating one target and forwarding another request to the server.
+        if any(c < 33 or c > 126 for c in lines[0] if c != 32):
+            return False
+        for line in lines[1:]:
+            name, separator, value = line.partition(b':')
+            if not separator or not re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+                return False
+            if any(c < 32 and c != 9 or c == 127 for c in value):
+                return False
+        names = [line.split(b':', 1)[0].lower() for line in lines[1:]]
+        if names.count(b'host') > 1 or any(n in names for n in (b'content-length', b'transfer-encoding', b'upgrade', b'expect')):
+            return False
         first = header.split(b'\r\n', 1)[0].decode('ascii')
         method, target, version = first.split(' ')
         if version not in ('HTTP/1.0', 'HTTP/1.1'):
@@ -52,14 +70,14 @@ def allowed_request(header, web_access='services'):
             if method not in ('GET', 'HEAD') or version != 'HTTP/1.1':
                 return False
             url = urlsplit(target)
-            if url.scheme != 'http' or url.port not in (None, 80):
+            if url.scheme != 'http' or url.port not in (None, 80) or url.fragment:
                 return False
         host = (url.hostname or '').lower()
-        if url.username or url.password or not host or host.endswith('.'):
+        if url.username is not None or url.password is not None or not host or host.endswith('.'):
             return False
         if web_access == 'public':
             try:
-                return ipaddress.ip_address(host).is_global
+                return public_address(ipaddress.ip_address(host))
             except ValueError:
                 # DNS is resolved and checked for public addresses again by
                 # open_public immediately before connecting, with no relookup.
@@ -75,6 +93,18 @@ def allowed_request(header, web_access='services'):
         return False
 
 
+def http_headers(header, authority):
+    """Keep end-to-end HTTP headers (cookies, ranges, auth), remove hop headers."""
+    fields = [line.split(b':', 1) for line in header[:-4].split(b'\r\n')[1:]]
+    blocked = {b'host', b'connection', b'proxy-connection', b'keep-alive',
+               b'proxy-authorization', b'proxy-authenticate', b'te', b'trailer'}
+    for name, value in fields:
+        if name.lower() == b'connection':
+            blocked.update(token.strip().lower() for token in value.split(b','))
+    kept = b''.join(name + b':' + value + b'\r\n' for name, value in fields if name.lower() not in blocked)
+    return b'Host: ' + authority.encode('ascii') + b'\r\n' + kept + b'Connection: close\r\n\r\n'
+
+
 def load_config(path):
     cfg = json.loads(Path(path).read_text())
     if cfg['arch'] not in ('aarch64', 'x86_64'):
@@ -87,7 +117,7 @@ def load_config(path):
         raise ValueError('Public browsing requires system VPN mode with public-address validation')
     if mode not in ('system', 'proxy'):
         raise ValueError('network_mode must be system or proxy')
-    fields = [('memory_mb', 4096, 65536), ('cpus', 1, 32)]
+    fields = [('memory_mb', 2048, 65536), ('cpus', 1, 32)]
     if mode == 'proxy':
         fields.append(('proxy_port', 1, 65535))
     for key, minimum, maximum in fields:
@@ -139,7 +169,7 @@ def command(cfg, check=True):
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            '-accel', accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
-           '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2',
+           '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
            '-netdev', net, '-device', 'virtio-net-pci,netdev=isolated',
            '-device', 'virtio-gpu-pci,edid=off,xres=1920,yres=1200', '-device', 'qemu-xhci',
@@ -206,7 +236,7 @@ WantedBy=multi-user.target
                          https_proxy='http://10.0.2.100:7890'),
                 package_update=False,
                 write_files=files,
-                runcmd=[['systemctl', 'disable', '--now', 'ssh'],
+                runcmd=[['systemctl', 'mask', '--now', 'ssh.service', 'ssh.socket'],
                         ['systemctl', 'daemon-reload'],
                         ['systemctl', 'enable', '--now', 'claude-setup.service']])
     # JSON is valid YAML, including for cloud-init. No YAML dependency needed.
@@ -237,8 +267,10 @@ def relay(port=None, mode='proxy', web_access='services'):
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
     header = bytearray()
+    deadline = time.monotonic() + 10
     while b'\r\n\r\n' not in header and len(header) < 32768:
-        if os.name != 'nt' and not select.select([sys.stdin.buffer], [], [], 10)[0]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or (os.name != 'nt' and not select.select([sys.stdin.buffer], [], [], remaining)[0]):
             return
         chunk = os.read(0, 1)
         if not chunk:
@@ -259,11 +291,8 @@ def relay(port=None, mode='proxy', web_access='services'):
     if not header.startswith(b'CONNECT '):
         # Close prevents a second HTTP request from using this validated
         # connection. Do not accept request bodies or pipelining.
-        lines = bytes(header).split(b'\r\n')
-        if any(line.lower().startswith((b'content-length:', b'transfer-encoding:')) for line in lines[1:]):
-            return
-        header = bytearray(first_line + b'\r\nHost: ' + host_header.encode('ascii') +
-                           b'\r\nConnection: close\r\n\r\n')
+        forwarded_headers = http_headers(bytes(header), host_header)
+        header = bytearray(first_line + b'\r\n' + forwarded_headers)
     else:
         header = bytearray(first_line + b'\r\nHost: ' + host_header.encode('ascii') + b'\r\n\r\n')
     destination = urlsplit('//' + target) if header.startswith(b'CONNECT ') else urlsplit(target)
@@ -283,7 +312,7 @@ def relay(port=None, mode='proxy', web_access='services'):
             if destination.query:
                 path += '?' + destination.query
             method = first_line.decode('ascii').split(' ')[0]
-            s.sendall(f'{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n'.encode('ascii'))
+            s.sendall(f'{method} {path} HTTP/1.1\r\n'.encode('ascii') + forwarded_headers)
         else:
             s.sendall(header)
         s.settimeout(None)
@@ -335,24 +364,37 @@ def prepare(cfg, base, digest):
         raise RuntimeError('Refusing to overwrite an existing environment')
     disk.parent.mkdir(parents=True, exist_ok=True)
     seed.parent.mkdir(parents=True, exist_ok=True)
-    seed_dir = seed.parent / 'seed-files'
-    seed_dir.mkdir(exist_ok=True)
-    (seed_dir / 'user-data').write_text(cloud_config())
-    (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n')
-    image_tool = tool('qemu-img')
-    subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(disk)], check=True)
-    subprocess.run([image_tool, 'resize', str(disk), '64G'], check=True)
-    if platform.system() == 'Darwin':
-        subprocess.run([tool('hdiutil'), 'makehybrid', '-iso', '-joliet',
-                        '-default-volume-name', 'cidata', '-o', str(seed), str(seed_dir)], check=True)
-    else:
-        iso = shutil.which('genisoimage') or shutil.which('mkisofs')
-        if not iso:
-            raise RuntimeError('Install genisoimage/mkisofs to create the cloud-init seed ISO')
-        subprocess.run([iso, '-output', str(seed), '-volid', 'cidata', '-joliet',
-                        '-rock', str(seed_dir)], check=True)
-    if os.name != 'nt':
-        disk.chmod(0o600)
+    # Build both files privately. A failed conversion/ISO creation leaves no
+    # half-installed environment; hard links publish without overwriting a race.
+    with tempfile.TemporaryDirectory(prefix='.prepare-', dir=disk.parent) as staging, \
+         tempfile.TemporaryDirectory(prefix='.seed-', dir=seed.parent) as seed_staging:
+        staged_disk = Path(staging) / 'desktop.qcow2'
+        staged_seed = Path(seed_staging) / 'seed.iso'
+        seed_dir = Path(seed_staging) / 'files'
+        seed_dir.mkdir()
+        (seed_dir / 'user-data').write_text(cloud_config(), encoding='utf-8')
+        (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n')
+        image_tool = tool('qemu-img')
+        subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(staged_disk)], check=True)
+        subprocess.run([image_tool, 'resize', str(staged_disk), '64G'], check=True)
+        if platform.system() == 'Darwin':
+            subprocess.run([tool('hdiutil'), 'makehybrid', '-iso', '-joliet',
+                            '-default-volume-name', 'cidata', '-o', str(staged_seed), str(seed_dir)], check=True)
+        else:
+            iso = shutil.which('genisoimage') or shutil.which('mkisofs')
+            if not iso:
+                raise RuntimeError('Install genisoimage/mkisofs to create the cloud-init seed ISO')
+            subprocess.run([iso, '-output', str(staged_seed), '-volid', 'cidata', '-joliet',
+                            '-rock', str(seed_dir)], check=True)
+        if os.name != 'nt':
+            staged_disk.chmod(0o600)
+            staged_seed.chmod(0o600)
+        os.link(staged_disk, disk)
+        try:
+            os.link(staged_seed, seed)
+        except BaseException:
+            disk.unlink()
+            raise
     print('Environment prepared. No account credentials were copied.')
 
 
@@ -392,7 +434,7 @@ def main():
                 for key in ('disk', 'seed'):
                     if not local_path(cfg[key]).is_file():
                         raise RuntimeError('Run prepare first')
-                with tempfile.TemporaryDirectory(prefix='claude-network-') as directory:
+                with exclusive(local_path(cfg['disk']).with_suffix('.launch.lock')), tempfile.TemporaryDirectory(prefix='claude-network-') as directory:
                     lease = Path(directory) / 'lease.json'
                     status_path = cfg.get('network_status')
                     if status_path:
@@ -403,6 +445,9 @@ def main():
                     initial_generation = events.snapshot()
                     watcher = None
                     routes = None
+                    def interrupted(signum, frame):
+                        raise KeyboardInterrupt('Launcher interrupted')
+                    previous_term = signal.signal(signal.SIGTERM, interrupted)
                     try:
                         # Subscribe BEFORE checking IP, so a route change during
                         # startup cannot produce an unobserved allowed session.
@@ -451,6 +496,7 @@ def main():
                             watcher.join(timeout=12)
                         if status_path:
                             network_guard.publish(status_path, {'allowed': False, 'reason': 'Среда остановлена'})
+                        signal.signal(signal.SIGTERM, previous_term)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as e:
         print(f'Cannot continue: {e}', file=sys.stderr)
         sys.exit(1)

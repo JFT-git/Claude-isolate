@@ -15,7 +15,7 @@ def build(output, arch):
     runtime = contents / 'Resources/runtime'
     (contents / 'MacOS').mkdir(parents=True, exist_ok=True)
     runtime.mkdir(parents=True, exist_ok=True)
-    for name in ['environment.py', 'network_guard.py', 'network_transport.py', 'route_guard.py',
+    for name in ['environment.py', 'network_guard.py', 'network_transport.py', 'route_guard.py', 'ubuntu_image.py', 'session_lock.py',
                  'environment.example.json', 'guest', 'macos']:
         source, target = root / name, runtime / name
         if source.is_dir():
@@ -25,7 +25,7 @@ def build(output, arch):
     (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleExecutable='ClaudeEnvironment', CFBundleIdentifier='local.claude.environment',
         CFBundleName='Claude Environment', CFBundlePackageType='APPL',
-        CFBundleShortVersionString='0.2.0', CFBundleVersion='2',
+        CFBundleShortVersionString='0.2.1', CFBundleVersion='3',
         LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True)))
     cache = root / 'build/modulecache' / arch
     cache.mkdir(parents=True, exist_ok=True)

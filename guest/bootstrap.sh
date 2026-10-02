@@ -1,13 +1,13 @@
 #!/bin/sh
 set -eu
-trap 'result=$?; if [ "$result" -ne 0 ]; then echo "CLAUDE-ISOLATION: setup-retrying exit=$result" > /dev/console; fi' EXIT
+trap 'result=$?; if [ "$result" -ne 0 ]; then rm -f /var/lib/claude-isolation-ready; echo "CLAUDE-ISOLATION: setup-retrying exit=$result" > /dev/console; fi' EXIT
 export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 # QEMU denies direct networking even before the guest firewall is installed.
 # A systemd service retries this idempotent setup after transient network errors.
 systemctl mask lightdm.service
 apt-get -o DPkg::Lock::Timeout=180 update
-apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4 xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils
+apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils
 nft -f /etc/claude-isolation.nft
 systemctl enable nftables
 install -m 600 /etc/claude-isolation.nft /etc/nftables.conf
@@ -134,6 +134,12 @@ runuser -u claude -- xdg-settings set default-web-browser firefox.desktop
 # Log versions and absence of keyring, never account state or secrets.
 if dpkg-query -W -f='${db:Status-Status}' gnome-keyring 2>/dev/null | grep -qx installed; then exit 1; fi
 echo 'CLAUDE-ISOLATION: no-keyring' > /dev/console
+# Reclaim installation archives and tell qcow2 which guest blocks are free.
+apt-get clean
+install -d /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/50-isolated.conf
+systemctl restart systemd-journald
+fstrim -av || true
 touch /var/lib/claude-isolation-ready
 systemctl unmask lightdm.service
 systemctl enable lightdm

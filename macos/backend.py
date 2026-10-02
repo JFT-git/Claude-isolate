@@ -22,6 +22,7 @@ sys.path.insert(0, str(ROOT))
 import environment
 import network_guard
 import vm_bundle
+import ubuntu_image
 
 
 def emit(message, **extra):
@@ -86,6 +87,8 @@ def qmp(cfg, execute, arguments=None):
 def network_state(cfg):
     try:
         state = json.loads(Path(cfg['network_status']).read_text())
+        if not isinstance(state, dict):
+            raise ValueError('Invalid network status')
         state['allowed'] = network_guard.permitted(cfg['network_status'])
         marker = Path(cfg['network_status']).with_suffix('.revoked')
         if marker.exists():
@@ -100,13 +103,15 @@ def network_state(cfg):
         return {'allowed': False, 'reason': 'Состояние защиты пока неизвестно'}
 
 
-def fetch(url, target):
-    if not url.startswith('https://'):
-        raise ValueError('HTTPS required')
-    with urllib.request.urlopen(url, timeout=30) as response, target.open('wb') as out:  # nosec B310 # Fixed HTTPS vendor URLs; schemes checked before/after redirect.
-        if not response.url.startswith('https://'):
-            raise ValueError('Insecure redirect')
-        shutil.copyfileobj(response, out, length=1024 * 1024)
+def boot_tail(path):
+    # Status is polled once per second: do not reread an unbounded install log.
+    try:
+        with Path(path).open('rb') as source:
+            source.seek(0, os.SEEK_END)
+            source.seek(max(0, source.tell() - 262144))
+            return source.read().decode('utf-8', errors='replace')
+    except OSError:
+        return ''
 
 
 def prepare(data, cfg):
@@ -120,41 +125,17 @@ def prepare(data, cfg):
     if Path(cfg['disk']).is_file() and Path(cfg['seed']).is_file():
         emit('Среда уже подготовлена', ready=True)
         return
-    download = data / 'downloads'
-    download.mkdir(exist_ok=True)
-    filename = 'noble-server-cloudimg-' + ('arm64' if cfg['arch'] == 'aarch64' else 'amd64') + '.img'
-    base = download / filename
-    checksums, signature = download / 'SHA256SUMS', download / 'SHA256SUMS.gpg'
-    url = 'https://cloud-images.ubuntu.com/noble/current/'
-    emit('Загрузка Ubuntu — примерно 600 МБ')
-    if not base.exists():
-        partial = base.with_suffix('.partial')
-        fetch(url + filename, partial)
-        partial.replace(base)
-    fetch(url + 'SHA256SUMS', checksums)
-    fetch(url + 'SHA256SUMS.gpg', signature)
-    emit('Проверка подписи Ubuntu')
-    home = download / 'verification'
-    home.mkdir(exist_ok=True); home.chmod(0o700)
-    fingerprint = 'D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81'
-    key = download / 'ubuntu-signing-key.asc'
-    fetch('https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x' + fingerprint, key)
-    common = [gpg, '--homedir', str(home), '--batch', '--no-autostart']
-    subprocess.run(common + ['--import', str(key)], check=True, capture_output=True)
-    verified = subprocess.run(common + ['--status-fd', '1', '--verify', str(signature), str(checksums)],
-                              check=True, capture_output=True, text=True)
-    if not any(line.startswith('[GNUPG:] VALIDSIG ' + fingerprint + ' ') for line in verified.stdout.splitlines()):
-        raise RuntimeError('Не подтверждён официальный ключ подписи Ubuntu')
-    digest = next(line.split()[0] for line in checksums.read_text().splitlines()
-                  if line.split()[-1].lstrip('*') == filename)
+    emit('Загрузка и проверка подписанного образа Ubuntu — примерно 600 МБ')
+    base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], gpg)
     emit('Создание отдельного диска Linux')
     environment.prepare(cfg, base, digest)
+    base.unlink(missing_ok=True)
     emit('Среда подготовлена. Можно запускать.', ready=True)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['status', 'country', 'prepare', 'start', 'restart', 'stop', 'screenshot'])
+    parser.add_argument('action', choices=['status', 'country', 'prepare', 'start', 'restart', 'stop', 'screenshot', 'economy', 'standard'])
     parser.add_argument('--data', required=True)
     args = parser.parse_args()
     data = Path(args.data).resolve()
@@ -163,11 +144,12 @@ def main():
         if args.action == 'status':
             running = False
             try:
-                running = qmp(cfg, 'query-status')['running']
+                qmp(cfg, 'query-status')
+                running = True  # A paused VM still owns its disk and launcher.
             except (OSError, ValueError, RuntimeError):
                 pass
             ready = Path(cfg['disk']).is_file() and Path(cfg['seed']).is_file()
-            boot = Path(cfg['boot_log']).read_text(errors='replace') if running and Path(cfg['boot_log']).exists() else ''
+            boot = boot_tail(cfg['boot_log']) if running else ''
             if 'CLAUDE-ISOLATION: desktop-ready' in boot and not cfg.get('desktop_verified'):
                 cfg['desktop_verified'] = True
                 write_config(cfg_path, cfg)
@@ -186,7 +168,22 @@ def main():
                 if 'CLAUDE-ISOLATION: FAILURE' in boot:
                     message = 'Установка не завершена — проверьте журнал загрузки'
             emit(message if running else 'Готова к запуску' if ready else 'Нужно подготовить среду',
-                 running=running, ready=ready, network=network_state(cfg) if running else None)
+                 running=running, ready=ready, memory_mb=cfg['memory_mb'], cpus=cfg['cpus'],
+                 network=network_state(cfg) if running else None)
+        elif args.action in ('economy', 'standard'):
+            # Use the same lock as start/restart: never resize a running guest.
+            with (data / 'session.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    qmp(cfg, 'query-status')
+                except (FileNotFoundError, ConnectionRefusedError):
+                    pass
+                else:
+                    raise RuntimeError('Сначала остановите среду, затем измените ресурсы.')
+                cfg.update(memory_mb=3072 if args.action == 'economy' else 6144,
+                           cpus=2 if args.action == 'economy' else 4)
+                write_config(cfg_path, cfg)
+                emit('Ресурсы сохранены для следующего запуска.', memory_mb=cfg['memory_mb'], cpus=cfg['cpus'])
         elif args.action == 'country':
             try:
                 result = network_guard.probe(cfg.get('proxy_port'), cfg['network_mode'])
@@ -216,9 +213,9 @@ def main():
                     time.sleep(.2)
             else:
                 try:
-                    if qmp(cfg, 'query-status')['running']:
-                        emit('Среда уже запущена', running=True)
-                        return
+                    qmp(cfg, 'query-status')
+                    emit('Среда уже запущена', running=True)
+                    return
                 except (OSError, ValueError, RuntimeError):
                     pass
             # Wait for the old launcher to finish its guard cleanup before a

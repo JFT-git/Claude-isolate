@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def config(system, machine, directory, firmware=None):
     arm = machine.lower() in ('aarch64', 'arm64')
     result = dict(arch='aarch64' if arm else 'x86_64', network_mode='system',
-                  web_access='public', memory_mb=8192, cpus=4,
+                  web_access='public', memory_mb=3072, cpus=2,
                   disk=str(directory / 'desktop.qcow2'), seed=str(directory / 'seed.iso'))
     if arm:
         candidates = [firmware] if firmware else ([
