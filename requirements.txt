@@ -1,0 +1,2 @@
+# Application runtime uses only Python's standard library; Python 3.12+ required.
+# Host QEMU/GnuPG and guest Debian packages are tracked separately (SECURITY.md).

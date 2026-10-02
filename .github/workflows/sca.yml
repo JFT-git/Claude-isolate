@@ -1,0 +1,83 @@
+name: SCA and secrets
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    name: Python dependencies and secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r requirements-security.txt
+      - name: Audit locked build and security tooling
+        run: |
+          mkdir -p reports
+          pip-audit --strict --disable-pip --no-deps -r requirements-security.txt -f json -o reports/pip-audit.json
+      - name: Scan source dependencies and secrets
+        if: always()
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          format: json
+          output: reports/trivy-source.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sca-source
+          path: reports/
+          if-no-files-found: warn
+  guest:
+    name: Guest dependencies (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Resolve the actual signed guest package dependency tree
+        run: docker build --pull -f packaging/guest-sca.Dockerfile -t claude-guest-sca:local .
+      - name: Record installed package versions
+        run: |
+          mkdir -p reports
+          docker run --rm --network none --entrypoint cat claude-guest-sca:local /guest-packages.tsv > reports/guest-packages.tsv
+      - name: Generate CycloneDX SBOM
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: claude-guest-sca:local
+          format: cyclonedx
+          output: reports/guest.cdx.json
+          exit-code: '0'
+      - name: Scan all known high/critical vulnerabilities (including unfixed)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: claude-guest-sca:local
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: json
+          output: reports/guest-vulnerabilities.json
+          exit-code: '1'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sca-guest-${{ matrix.arch }}
+          path: reports/
+          if-no-files-found: warn

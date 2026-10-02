@@ -1,0 +1,6 @@
+*
+!guest/
+!guest/repositories.sh
+!guest/packages.txt
+!packaging/
+!packaging/guest-sca.Dockerfile

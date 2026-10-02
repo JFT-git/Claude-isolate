@@ -1,0 +1,4 @@
+bandit
+pip-audit
+pip-tools
+PyYAML

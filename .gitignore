@@ -1,0 +1,22 @@
+# User data and VM images must never be published.
+environment.json
+state/
+* Data/
+*.qcow2
+*.img
+*.iso
+*.sock
+*.log
+*.ppm
+*.pem
+*.key
+.env
+.env.*
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+reports/
+*.app/
+.DS_Store

@@ -1,0 +1,17 @@
+table inet claude_isolation {
+  chain input {
+    type filter hook input priority -10; policy drop;
+    iifname "lo" accept
+    ct state established,related accept
+    udp sport 67 udp dport 68 accept
+  }
+  chain forward {
+    type filter hook forward priority -10; policy drop;
+  }
+  chain output {
+    type filter hook output priority -10; policy drop;
+    oifname "lo" accept
+    ip daddr 10.0.2.100 tcp dport 7890 accept
+    udp sport 68 udp dport 67 accept
+  }
+}

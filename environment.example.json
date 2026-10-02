@@ -1,0 +1,10 @@
+{
+  "arch": "aarch64",
+  "network_mode": "system",
+  "web_access": "public",
+  "memory_mb": 8192,
+  "cpus": 4,
+  "firmware": "/opt/homebrew/share/qemu/edk2-aarch64-code.fd",
+  "disk": "state/desktop.qcow2",
+  "seed": "state/seed.iso"
+}

@@ -1,0 +1,79 @@
+name: SAST
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  bandit:
+    name: Bandit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --require-hashes -r requirements-security.txt
+      - name: Python SAST (medium/high fail)
+        run: |
+          mkdir -p reports
+          bandit -r environment.py network_guard.py network_transport.py route_guard.py macos scripts -ll -f json -o reports/bandit.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sast-bandit
+          path: reports/
+          if-no-files-found: warn
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: python
+            os: ubuntu-24.04
+            mode: none
+          - language: swift
+            os: macos-15
+            mode: manual
+          - language: actions
+            os: ubuntu-24.04
+            mode: none
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: github/codeql-action/init@7999b86c43a865dc79d8923397f35af22de63401 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.mode }}
+          queries: security-extended
+      - if: matrix.language == 'swift'
+        run: python macos/build.py --arch arm64
+      - uses: github/codeql-action/analyze@7999b86c43a865dc79d8923397f35af22de63401 # v4
+        with:
+          output: reports/codeql
+          upload: false
+      - name: Enforce security threshold
+        run: python scripts/sarif_gate.py reports/codeql
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: sast-codeql-${{ matrix.language }}
+          path: reports/codeql/
+          if-no-files-found: warn
+      - uses: github/codeql-action/upload-sarif@7999b86c43a865dc79d8923397f35af22de63401 # v4
+        if: always() && github.event_name != 'pull_request' && github.event.repository.private == false
+        with:
+          sarif_file: reports/codeql
+          category: ${{ matrix.language }}
