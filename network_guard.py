@@ -65,7 +65,9 @@ def probe(port=None, mode='proxy'):
             conn.connect()
         else:
             conn.sock = open_public(host, 443, timeout=3)
-        conn.sock = ssl.create_default_context().wrap_socket(conn.sock, server_hostname=host)
+        context = ssl.create_default_context()
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        conn.sock = context.wrap_socket(conn.sock, server_hostname=host)
         headers = {'Accept': 'application/json' if token else 'text/plain',
                    'Cache-Control': 'no-cache', 'Connection': 'close',
                    'User-Agent': 'IsolatedDesktop-NetworkGuard/0.1'}

@@ -66,6 +66,7 @@ class SystemVpnTests(unittest.TestCase):
             conn.set_tunnel.assert_not_called()
             conn.connect.assert_not_called()
             tls.wrap_socket.assert_called_once()
+            self.assertEqual(tls.minimum_version, network_guard.ssl.TLSVersion.TLSv1_2)
 
     def test_system_relay_tunnels_guest_payload_without_external_proxy(self):
         # Substitute a local server only for the transport under test. The
