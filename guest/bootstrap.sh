@@ -11,7 +11,7 @@ apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4 xfce
 nft -f /etc/claude-isolation.nft
 systemctl enable nftables
 install -m 600 /etc/claude-isolation.nft /etc/nftables.conf
-/usr/local/sbin/claude-repositories
+CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
 apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends claude-desktop firefox
 # No password prompt or Secret Service daemon inside this passwordless VM.

@@ -1,6 +1,9 @@
 #!/bin/sh
 # Shared by guest installation and the dependency scanning image.
 set -eu
+if [ -n "${CLAUDE_REPOSITORY_PROXY:-}" ]; then
+  export https_proxy="$CLAUDE_REPOSITORY_PROXY" http_proxy="$CLAUDE_REPOSITORY_PROXY"
+fi
 curl --retry 5 --retry-all-errors --fail --silent --show-error \
   https://downloads.claude.ai/claude-desktop/key.asc \
   -o /usr/share/keyrings/claude-desktop-archive-keyring.asc

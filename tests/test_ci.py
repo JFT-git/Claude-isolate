@@ -15,6 +15,7 @@ import environment
 class PackagingTests(unittest.TestCase):
     def test_sca_inventory_matches_guest_installed_packages(self):
         text = (ROOT / 'guest/bootstrap.sh').read_text()
+        self.assertIn('CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories', text)
         installed = set()
         for line in text.splitlines():
             if line.startswith('apt-get ') and ' install -y --no-install-recommends ' in line:
