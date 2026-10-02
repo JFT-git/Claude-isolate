@@ -1,5 +1,7 @@
 """Host-controller regressions; skip on Windows where fcntl is unavailable."""
 import json
+import contextlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -43,6 +45,15 @@ class BackendTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), {'value': 1})
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(list(Path(directory).iterdir()), [path])
+
+    def test_permission_denial_is_explicit_so_ui_stops_polling(self):
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['backend.py', 'status', '--data', '/unused']), \
+             patch.object(self.backend, 'config', side_effect=PermissionError('Access denied')), \
+             contextlib.redirect_stdout(output):
+            with self.assertRaises(SystemExit):
+                self.backend.main()
+        self.assertTrue(json.loads(output.getvalue())['permission_error'])
 
     @unittest.skipUnless(sys.platform == "darwin", "Native macOS runtime path")
     def test_economy_profile_saved_for_next_start(self):

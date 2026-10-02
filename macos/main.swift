@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
     var busy = false
     var attemptedSetup = false
+    var permissionBlocked = false
     var pendingChecks = Set<String>()
     let dataURL: URL = {
         let arguments = ProcessInfo.processInfo.arguments
@@ -102,9 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         run("status")
-        checkNetwork()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self = self, !self.busy else { return }
+            guard let self = self, !self.busy, !self.permissionBlocked else { return }
             self.run("status")
         }
     }
@@ -116,6 +116,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handle(_ text: String, action: String) {
+        // A denied TCC request must not cause another prompt every poll.
+        if text.contains("Operation not permitted") || text.contains("Permission denied") || text.contains("\"permission_error\": true") {
+            permissionBlocked = true
+            busy = false
+            status.stringValue = "Нет доступа к папке среды. Автоматические проверки приостановлены."
+            append("Установите приложение в Applications; данные новой среды хранятся в Library/Application Support. После разрешения доступа нажмите «Проверить сеть».")
+            return
+        }
         for line in text.split(separator: "\n") {
             guard let data = String(line).data(using: .utf8),
                   let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -160,6 +168,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let resources = Bundle.main.resourceURL else { return }
         let isCheck = action == "status" || action == "country"
         if isCheck {
+            guard !permissionBlocked else { return }
             guard !pendingChecks.contains(action) else { return }
             pendingChecks.insert(action)
         }
@@ -236,7 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         run(resourcePicker.indexOfSelectedItem == 0 ? "economy" : "standard")
     }
     @objc func stop() { run("stop") }
-    @objc func checkNetwork() { run("country") }
+    @objc func checkNetwork() {
+        permissionBlocked = false
+        run("status")
+        run("country")
+    }
     @objc func openFolder() { NSWorkspace.shared.open(dataURL) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

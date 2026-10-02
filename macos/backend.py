@@ -243,7 +243,8 @@ def main():
             qmp(cfg, 'screendump', {'filename': str(data / 'screen.ppm')})
             emit('Снимок гостевого экрана сохранён')
     except Exception as e:
-        emit('Не удалось выполнить действие: ' + str(e), error=True)
+        emit('Не удалось выполнить действие: ' + str(e), error=True,
+             permission_error=isinstance(e, PermissionError))
         sys.exit(1)
 
 
