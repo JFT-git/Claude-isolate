@@ -51,6 +51,16 @@ Authentication is scoped to the private VM device, without account passwords or
 host SSH keys. Only the fixed gateway destination is accepted, with up to 64
 channels; every destination request still requires validation and a current lease.
 
+The system transport accepts public IPv4 DNS answers. For public-looking hostnames
+whose IPv4 answers are ALL in the VPN synthetic range 198.18.0.0/15, it instead
+queries Cloudflare DoH over certificate-verified TLS using fixed public bootstrap
+addresses 1.1.1.1/1.0.0.1. It validates the returned A records and connects directly
+to those exact public IPs, never to the synthetic address. IP literals, local names,
+mixed synthetic/public/private replies, TLS failures, redirects, oversized replies,
+and non-public DoH answers do not gain access. DoH uses normal host routing and
+does not prove VPN use; the external-IP lease remains independently required.
+Cloudflare learns queried names; arbitrary user-defined fake-IP ranges are not supported.
+
 ## Releases and supply chain
 
 Actions are pinned to full commits; Dependabot proposes updates. Python tools have

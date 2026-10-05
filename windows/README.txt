@@ -15,6 +15,12 @@ guest installs XFCE, Claude Desktop, and Firefox automatically on its first boot
 
 Data, sessions, and logs are in %LOCALAPPDATA%\Claude Isolate. Uninstalling the
 controller preserves that directory. Do not delete it if you need your VM data.
+Updating the controller does not require recreating the Linux disk.
+Use a full-tunnel/TUN VPN; a Windows HTTP proxy alone does not route the gateway.
+Synthetic VPN DNS answers in 198.18.0.0/15 are resolved to real public addresses
+using certificate-verified Cloudflare DNS-over-HTTPS over the host's routing.
+Local addresses remain blocked. If secure DNS cannot be reached, access stays
+closed and the controller displays the DNS error.
 The default allocation is 3 GB RAM and 2 CPUs. Enable Windows Hypervisor Platform
 and hardware virtualization for fast WHPX acceleration. Without it, the app uses
 slower software emulation. The guest display supports Ctrl+Alt+F for full screen.

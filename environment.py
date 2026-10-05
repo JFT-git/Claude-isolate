@@ -322,8 +322,14 @@ def relay(port=None, mode='proxy', web_access='services'):
     else:
         header = bytearray(first_line + b'\r\nHost: ' + host_header.encode('ascii') + b'\r\n\r\n')
     destination = urlsplit('//' + target) if header.startswith(b'CONNECT ') else urlsplit(target)
-    upstream = (socket.create_connection(('127.0.0.1', port), timeout=3) if mode == 'proxy'
-                else open_public(destination.hostname, destination.port or 80, timeout=3))
+    try:
+        upstream = (socket.create_connection(('127.0.0.1', port), timeout=3) if mode == 'proxy'
+                    else open_public(destination.hostname, destination.port or 80, timeout=3))
+    except OSError as error:
+        print(f'Gateway connection failed: {error}', file=sys.stderr)
+        sys.stdout.buffer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+        sys.stdout.buffer.flush()
+        return
     with upstream as s:
         # Recheck after connect: permission may have expired during connection.
         if not network_guard.permitted(lease):
@@ -537,6 +543,8 @@ def main():
                         signal.signal(signal.SIGTERM, previous_term)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as e:
         print(f'Cannot continue: {e}', file=sys.stderr)
+        if args.action != 'relay':
+            print(json.dumps({'message': str(e), 'error': True}, ensure_ascii=False), flush=True)
         sys.exit(1)
 
 
