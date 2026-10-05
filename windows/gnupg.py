@@ -3,10 +3,10 @@ import hashlib
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import re
 import struct
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
 
 import ubuntu_image
 
@@ -22,13 +22,13 @@ def payload(package):
     if not 36 <= end < len(package):
         raise RuntimeError('Invalid GnuPG CAB boundary')
     mapping = {}
-    for field in ET.fromstring(package[end:]).iter():
-        index = field.get('cabinetFileId')
-        if index is None:
-            continue
+    # The package has already matched its pinned hash. Read only the literal
+    # file mapping; no XML entity expansion or general XML parser is needed.
+    for field in re.finditer(rb'<field cabinetFileId="([0-9]+)">([^<]+)</field>', package[end:]):
+        index = field[1].decode('ascii')
         if not index.isascii() or not index.isdecimal() or index in mapping:
             raise RuntimeError('Invalid GnuPG CAB file ID')
-        source = PureWindowsPath(field.text or '')
+        source = PureWindowsPath(field[2].decode('utf-8'))
         parts = source.parts[1:]
         if not source.is_absolute() or not parts or any(
                 part in ('.', '..') or ':' in part or '/' in part or '\\' in part
