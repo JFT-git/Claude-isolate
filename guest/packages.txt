@@ -22,3 +22,5 @@ ca-certificates
 xdg-utils
 claude-desktop
 firefox
+
+openssh-client
