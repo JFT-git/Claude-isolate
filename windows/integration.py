@@ -22,7 +22,7 @@ from windows.serial_gateway import boot_command
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
                'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
-PROBE = '''import concurrent.futures, socket, ssl
+PROBE = '''import concurrent.futures, socket, ssl, time
 
 def blocked_direct():
     try:
@@ -32,7 +32,15 @@ def blocked_direct():
         print('WINDOWS-INTEGRATION: DIRECT-BLOCKED', flush=True)
 
 def proxy(host):
-    stream = socket.create_connection(('10.0.2.100', 7890), timeout=20)
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            stream = socket.create_connection(('10.0.2.100', 7890), timeout=20)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.2)
     stream.sendall(('CONNECT ' + host + ':443 HTTP/1.1\\r\\n\\r\\n').encode())
     reply = bytearray()
     while b'\\r\\n\\r\\n' not in reply:

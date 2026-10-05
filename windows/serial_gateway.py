@@ -126,6 +126,11 @@ class Gateway:
             def check_global_request(self, kind, message):
                 return kind == 'keepalive@openssh.com'
         transport = paramiko.Transport(stream)
+        # The named pipe exists before the guest boots. Slow TCG boots must
+        # not consume SSH's usual 15-second network handshake deadline.
+        transport.banner_timeout = 600
+        transport.handshake_timeout = 600
+        transport.auth_timeout = 60
         self.transport = transport
         transport.add_server_key(paramiko.RSAKey.generate(2048))
         transport.start_server(server=Server())
