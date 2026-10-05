@@ -44,7 +44,7 @@ def smoke(folder, directory):
     plan = json.loads(run([str(core), 'plan', '--config', str(data / 'environment.json')],
                          capture_output=True, text=True, env=env, timeout=30).stdout)
     net = plan[plan.index('-netdev') + 1]
-    if 'Claude Isolate Core.exe' not in net or 'environment.py' in net or 'restrict=on' not in net:
+    if 'guestfwd=' in net or 'restrict=on' not in net or 'virtserialport,chardev=gateway,name=claude.gateway' not in plan:
         raise RuntimeError('Frozen relay or QEMU network plan is incorrect')
     for host, expected in [('127.0.0.1', b'HTTP/1.1 403'), ('claude.ai', b'HTTP/1.1 503')]:
         response = run([str(core), 'relay', '--mode', 'system', '--web-access', 'public'],
@@ -58,7 +58,7 @@ def smoke(folder, directory):
 def licenses(folder):
     target = folder / 'licenses'
     target.mkdir()
-    for package in ('pycdlib', 'pyinstaller'):
+    for package in ('pycdlib', 'pyinstaller', 'paramiko', 'cryptography', 'bcrypt', 'pynacl', 'cffi', 'invoke'):
         distribution = importlib.metadata.distribution(package)
         for path in distribution.files or []:
             if 'license' in Path(path).name.lower() and path.locate().is_file():

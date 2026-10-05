@@ -44,6 +44,13 @@ every desktop/VPN/hardware combination. Linux/Windows lack the Darwin route
 watcher and need manual routing/disconnection testing. A periodic public-IP probe
 cannot prevent every race or establish every site's egress under split tunneling.
 
+Windows uses a private virtio-serial/named-pipe gateway instead of libslirp's
+Windows-incompatible command spawning. SSH only multiplexes filtered proxy
+channels over this device: no host TCP SSH listener, shell, sessions or SFTP.
+Authentication is scoped to the private VM device, without account passwords or
+host SSH keys. Only the fixed gateway destination is accepted, with up to 64
+channels; every destination request still requires validation and a current lease.
+
 ## Releases and supply chain
 
 Actions are pinned to full commits; Dependabot proposes updates. Python tools have

@@ -2,7 +2,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,6 +15,45 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'Windows bridge dependency not installed')
+    def test_serial_transport_multiplexes_only_filtered_gateway_channels(self):
+        import concurrent.futures
+        import socket
+        import threading
+        import paramiko
+        from windows.serial_gateway import Gateway
+        server, client = socket.socketpair()
+        gateway = Gateway({'network_mode': 'system', 'web_access': 'public'},
+                          dict(os.environ, CLAUDE_NETWORK_LEASE=''))
+        thread = threading.Thread(target=gateway.serve, args=(server,), daemon=True)
+        thread.start()
+        transport = paramiko.Transport(client)
+        try:
+            transport.start_client(timeout=10)
+            transport.auth_none('claude-gateway')
+            with self.assertRaises(paramiko.ChannelException):
+                transport.open_session(timeout=5)
+            with self.assertRaises(paramiko.ChannelException):
+                transport.open_channel('direct-tcpip', ('127.0.0.1', 22), ('127.0.0.1', 0), timeout=5)
+            def request(host):
+                channel = transport.open_channel('direct-tcpip', ('claude.gateway', 7890),
+                                                 ('127.0.0.1', 0), timeout=5)
+                channel.settimeout(10)
+                try:
+                    channel.sendall(('CONNECT ' + host + ':443 HTTP/1.1\r\n\r\n').encode())
+                    return channel.recv(4096)
+                finally:
+                    channel.close()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                local, public = list(pool.map(request, ['127.0.0.1', 'claude.ai']))
+            self.assertTrue(local.startswith(b'HTTP/1.1 403'))
+            self.assertTrue(public.startswith(b'HTTP/1.1 503'))
+        finally:
+            transport.close()
+            gateway.close()
+            thread.join(timeout=5)
+            server.close()
+
     def test_native_gnupg_bad_checksum_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(gnupg.ubuntu_image, 'fetch', side_effect=lambda url, target: target.write_bytes(b'invalid')), \
@@ -59,7 +97,7 @@ class WindowsBackendTests(unittest.TestCase):
             _, again = backend.config(directory)
             self.assertEqual(again, cfg)
 
-    def test_frozen_windows_paths_survive_glib_posix_parser(self):
+    def test_windows_uses_private_serial_bridge_instead_of_glib_socket_spawn(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, cfg = backend.config(Path(temporary))
             executable = r'C:\Users\A B\Claude Isolate Core.exe'
@@ -68,10 +106,9 @@ class WindowsBackendTests(unittest.TestCase):
                  patch.object(sys, 'executable', executable):
                 cmd = environment.command(cfg, check=False)
             net = cmd[cmd.index('-netdev') + 1]
-            parsed = shlex.split(net.split('-cmd:', 1)[1].replace(',,', ','))
-            self.assertEqual(parsed[:2], [executable, 'relay'])
-            self.assertNotIn('environment.py', parsed)
+            self.assertNotIn('guestfwd=', net)
             self.assertIn('restrict=on', net)
+            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
             self.assertIn('pipe:' + cfg['qmp_pipe'], cmd)
             self.assertFalse(any('tcp:' in c for c in cmd if c.startswith('pipe:')))
 

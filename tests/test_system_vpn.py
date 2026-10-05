@@ -24,16 +24,24 @@ class SystemVpnTests(unittest.TestCase):
         self.assertNotIn('proxy_port', cfg)
         cmd = environment.command(cfg, check=False)
         net = cmd[cmd.index('-netdev') + 1]
-        self.assertIn('--mode system', net)
+        if environment.platform.system() == 'Windows':
+            self.assertNotIn('guestfwd=', net)
+            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
+        else:
+            self.assertIn('--mode system', net)
         self.assertNotIn('--port', net)
         self.assertIn('restrict=on', net)
 
     def test_proxy_mode_remains_optional(self):
         cfg = environment.load_config(environment.ROOT / 'environment.proxy.example.json')
-        net = environment.command(cfg, check=False)
-        net = net[net.index('-netdev') + 1]
-        self.assertIn('--mode proxy', net)
-        self.assertIn('--port 7890', net)
+        cmd = environment.command(cfg, check=False)
+        net = cmd[cmd.index('-netdev') + 1]
+        if environment.platform.system() == 'Windows':
+            self.assertNotIn('guestfwd=', net)
+            self.assertEqual(cfg['proxy_port'], 7890)
+        else:
+            self.assertIn('--mode proxy', net)
+            self.assertIn('--port 7890', net)
 
     def test_dns_rebinding_to_local_ip_blocked_before_connect(self):
         for ip in ('127.0.0.1', '192.168.1.1', '10.0.2.2', '169.254.169.254'):

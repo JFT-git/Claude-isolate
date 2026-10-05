@@ -51,8 +51,10 @@ class IsolationTests(unittest.TestCase):
         net = cmd[cmd.index('-netdev') + 1]
         self.assertIn('restrict=on', net)
         self.assertIn('ipv6=off', net)
-        for unsafe in ('hostfwd=', 'smb=', '-virtfs', '-fsdev', '-spice', '-qmp'):
+        for unsafe in ('hostfwd=', 'smb=', '-virtfs', '-fsdev', '-spice'):
             self.assertNotIn(unsafe, ' '.join(cmd))
+        if '-qmp' in cmd:
+            self.assertTrue(cmd[cmd.index('-qmp') + 1].startswith('pipe:claude-isolate-'))
 
     def test_cloud_user_has_no_administration_rights(self):
         cfg = json.loads(environment.cloud_config().split('\n', 1)[1])

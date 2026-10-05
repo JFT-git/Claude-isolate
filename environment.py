@@ -170,6 +170,8 @@ def command(cfg, check=True):
     relay_cmd = shlex.join(relay)
     net = ('user,id=isolated,restrict=on,ipv6=off,'
            'guestfwd=tcp:10.0.2.100:7890-cmd:' + relay_cmd.replace(',', ',,'))
+    if system == 'Windows':
+        net = 'user,id=isolated,restrict=on,ipv6=off'
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            '-accel', accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64' if accel == 'whpx' else 'max',
@@ -189,6 +191,13 @@ def command(cfg, check=True):
         if display not in ('sdl', 'none'):
             raise ValueError('Unsupported Windows display')
         cmd += ['-display', display]
+        import uuid
+        pipe = cfg.setdefault('qmp_pipe', 'claude-isolate-' + uuid.uuid4().hex)
+        if not re.fullmatch(r'claude-isolate-[0-9a-f]{32}', pipe):
+            raise ValueError('Invalid Windows control pipe')
+        cmd += ['-device', 'virtio-serial-pci',
+                '-chardev', 'pipe,id=gateway,path=' + pipe + '-gateway',
+                '-device', 'virtserialport,chardev=gateway,name=claude.gateway']
     if arch == 'aarch64':
         firmware = local_path(cfg['firmware'])
         if check and not firmware.is_file():
@@ -208,7 +217,7 @@ def command(cfg, check=True):
     return cmd
 
 
-def cloud_config():
+def cloud_config(cfg=None):
     def file(path, content, permissions='0644'):
         return dict(path=path, content=content, owner='root:root', permissions=permissions)
     files = [
@@ -254,6 +263,9 @@ WantedBy=multi-user.target
                         ['systemctl', 'daemon-reload'],
                         ['systemctl', 'enable', '--now', 'claude-setup.service']])
     # JSON is valid YAML, including for cloud-init. No YAML dependency needed.
+    if platform.system() == 'Windows':
+        from windows.serial_gateway import boot_command
+        data['bootcmd'] = [boot_command(ROOT)]
     return '#cloud-config\n' + json.dumps(data, ensure_ascii=False, indent=2) + '\n'
 
 
@@ -386,7 +398,7 @@ def prepare(cfg, base, digest):
         staged_seed = Path(seed_staging) / 'seed.iso'
         seed_dir = Path(seed_staging) / 'files'
         seed_dir.mkdir()
-        (seed_dir / 'user-data').write_text(cloud_config(), encoding='utf-8', newline='\n')
+        (seed_dir / 'user-data').write_text(cloud_config(cfg), encoding='utf-8', newline='\n')
         (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n',
                                           encoding='utf-8', newline='\n')
         image_tool = tool('qemu-img')
@@ -464,6 +476,7 @@ def main():
                     initial_generation = events.snapshot()
                     watcher = None
                     routes = None
+                    bridge = None
                     def interrupted(signum, frame):
                         raise KeyboardInterrupt('Launcher interrupted')
                     previous_term = signal.signal(signal.SIGTERM, interrupted)
@@ -492,6 +505,10 @@ def main():
                             env['CLAUDE_NETWORK_REVOKE'] = str(Path(status_path).with_suffix('.revoked'))
                         env.pop('IPINFO_TOKEN', None)
                         proc = subprocess.Popen(cmd, env=env)
+                        if platform.system() == 'Windows':
+                            from windows.serial_gateway import Gateway
+                            bridge = Gateway(cfg, env)
+                            bridge.start()
                         print(json.dumps({'message': 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
                         try:
                             proc.wait()
@@ -507,6 +524,8 @@ def main():
                             raise
                     finally:
                         network_guard.revoke(lease, status_path, 'Среда остановлена')
+                        if bridge:
+                            bridge.close()
                         stop.set()
                         events.wake.set()
                         if routes:

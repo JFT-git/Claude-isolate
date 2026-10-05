@@ -17,6 +17,7 @@ import network_guard
 import ubuntu_image
 from windows import backend
 from windows.job import Job
+from windows.serial_gateway import boot_command
 
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
@@ -120,6 +121,7 @@ def main():
         cfg = environment.load_config(path)
         cloud = '#cloud-config\n' + json.dumps({
             'hostname': 'windows-isolation-test', 'ssh_pwauth': False,
+            'bootcmd': [boot_command(ROOT)],
             'write_files': [{'path': '/ci-probe.py', 'content': PROBE, 'permissions': '0600'}],
             'runcmd': [['python3', '/ci-probe.py'], ['systemctl', 'poweroff']],
         })
