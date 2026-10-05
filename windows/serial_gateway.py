@@ -31,12 +31,18 @@ def boot_command(root):
 class Pipe:
     def __init__(self, pipe):
         self.pipe = pipe
+        # _read holds the Windows CRT descriptor lock until input arrives.
+        # Sharing that descriptor with _write stalls SSH until a keepalive or
+        # guest packet happens to release it. Separate descriptors are required
+        # for full-duplex traffic on the same kernel named-pipe connection.
+        self.writer = (os.fdopen(os.dup(pipe.fileno()), 'wb', buffering=0)
+                       if os.name == 'nt' else pipe)
 
     def recv(self, count):
         return self.pipe.read(count)
 
     def send(self, data):
-        return self.pipe.write(data)
+        return self.writer.write(data)
 
     def settimeout(self, value):
         pass  # The QEMU pipe closes when the owned VM exits.
@@ -51,7 +57,10 @@ class Pipe:
                 api.CancelIoEx(msvcrt.get_osfhandle(self.pipe.fileno()), None)
             except (ValueError, OSError):
                 pass
-        self.pipe.close()
+        if self.writer is not self.pipe and not self.writer.closed:
+            self.writer.close()
+        if not self.pipe.closed:
+            self.pipe.close()
 
 
 class Gateway:

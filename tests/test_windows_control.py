@@ -19,10 +19,13 @@ class WindowsControlTests(unittest.TestCase):
             process = Mock()
             process.poll.return_value = None
             client, server = socket.socketpair()
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
             server.settimeout(5)
             stream = client.makefile('rwb', buffering=0)
             commands = []
             failures = []
+            events_sent = threading.Event()
             def qemu():
                 try:
                     with server.makefile('rwb', buffering=0) as pipe:
@@ -32,17 +35,26 @@ class WindowsControlTests(unittest.TestCase):
                             commands.append(command['execute'])
                             result = {'running': True} if command['execute'] == 'query-status' else {}
                             pipe.write(json.dumps({'id': command['id'], 'return': result}).encode() + b'\n')
+                            # A burst larger than a Windows pipe's buffer must
+                            # not block the VM between external requests.
+                            if len(commands) == 2:
+                                for _ in range(100):
+                                    pipe.write(b'{"event":"VSERPORT_CHANGE","data":{"padding":"' + b'x' * 512 + b'"}}\n')
+                                events_sent.set()
                 except Exception as error:
                     failures.append(error)
+                finally:
+                    server.close()
             peer = threading.Thread(target=qemu, daemon=True)
             peer.start()
-            owner = Control(cfg, process)
+            owner = Control(cfg, process, reader_factory=lambda pipe: client.makefile('rb', buffering=0))
             try:
                 with patch('windows.control.open', return_value=stream, create=True):
                     owner.start()
                     self.assertTrue(owner.wait_ready(2))
                     # No external request was needed to complete negotiation.
                     self.assertEqual(commands, ['qmp_capabilities', 'query-status'])
+                    self.assertTrue(events_sent.wait(5), 'Events blocked QEMU without an external request')
                     for _ in range(2):
                         self.assertTrue(request(cfg, 'query-status', timeout=2)['running'])
                     self.assertEqual(request(cfg, 'system_powerdown', timeout=2), {})
@@ -67,7 +79,8 @@ class WindowsControlTests(unittest.TestCase):
             # Test the mailbox loop without opening a real Windows pipe.
             pipe = Mock()
             pipe.readline.return_value = b'{"QMP":{}}\n'
-            with patch.object(owner, 'exchange', return_value={'running': True}) as exchange:
+            with patch.object(owner, 'exchange', return_value={'running': True}) as exchange, \
+                 patch.object(owner, 'start_reader'):
                 thread = threading.Thread(target=owner.serve, args=(pipe,), daemon=True)
                 thread.start()
                 self.assertTrue(owner.wait_ready(2))

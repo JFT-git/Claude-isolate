@@ -18,7 +18,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.6'
+VERSION = '0.3.7'
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
 

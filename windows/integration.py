@@ -16,13 +16,14 @@ import environment
 import network_guard
 import ubuntu_image
 from windows import backend
+from windows import gnupg
 from windows.job import Job
 from windows.serial_gateway import boot_command
 
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
                'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
-PROBE = '''import concurrent.futures, socket, ssl, time
+PROBE = '''import concurrent.futures, hashlib, http.client, socket, ssl, time
 
 def blocked_direct():
     try:
@@ -83,6 +84,37 @@ def public_pair():
                 raise
             time.sleep(5)
 
+def bulk_https():
+    # Exercise many SSH packets and window updates; short trace responses did
+    # not reveal Windows descriptor locks that stalled full-duplex downloads.
+    for attempt in range(3):
+        try:
+            stream, reply = proxy('gnupg.org')
+            if not reply.startswith(b'HTTP/1.1 200'):
+                stream.close()
+                raise RuntimeError('Gateway refused bulk HTTPS')
+            with ssl.create_default_context().wrap_socket(stream, server_hostname='gnupg.org') as tls:
+                tls.sendall(b'GET @BULK_PATH@ HTTP/1.1\\r\\nHost: gnupg.org\\r\\nConnection: close\\r\\n\\r\\n')
+                response = http.client.HTTPResponse(tls)
+                response.begin()
+                if response.status != 200:
+                    raise RuntimeError('Bulk HTTPS status: ' + str(response.status))
+                digest, count = hashlib.sha256(), 0
+                while block := response.read(65536):
+                    count += len(block)
+                    if count > 8 * 1024 * 1024:
+                        raise RuntimeError('Oversized bulk response')
+                    digest.update(block)
+            if count < 1024 * 1024 or digest.hexdigest() != '@BULK_HASH@':
+                raise RuntimeError('Bulk HTTPS checksum mismatch')
+            print('WINDOWS-INTEGRATION: BULK-HTTPS-OK', count, flush=True)
+            return
+        except (OSError, RuntimeError, http.client.HTTPException) as error:
+            print('WINDOWS-INTEGRATION: BULK-ATTEMPT-FAILED', attempt + 1, str(error), flush=True)
+            if attempt == 2:
+                raise
+            time.sleep(5)
+
 blocked_direct()
 stream, reply = proxy('127.0.0.1')
 stream.close()
@@ -90,7 +122,8 @@ if not reply.startswith(b'HTTP/1.1 403'):
     raise RuntimeError('Gateway allowed a local destination')
 print('WINDOWS-INTEGRATION: LOCAL-BLOCKED', flush=True)
 public_pair()
-'''
+bulk_https()
+'''.replace('@BULK_PATH@', gnupg.URL.split('gnupg.org', 1)[1]).replace('@BULK_HASH@', gnupg.SHA256)
 
 
 def qemu(directory):
@@ -232,7 +265,7 @@ def main():
             if Path(cfg['boot_log']).is_file():
                 shutil.copy2(cfg['boot_log'], report / 'boot.log')
         boot = (report / 'boot.log').read_text(encoding='utf-8', errors='replace')
-        for marker in ('DIRECT-BLOCKED', 'LOCAL-BLOCKED', 'PUBLIC-HTTPS-OK'):
+        for marker in ('DIRECT-BLOCKED', 'LOCAL-BLOCKED', 'PUBLIC-HTTPS-OK', 'BULK-HTTPS-OK'):
             if 'WINDOWS-INTEGRATION: ' + marker not in boot:
                 lines = boot.splitlines()
                 for index, line in enumerate(lines):
@@ -244,6 +277,7 @@ def main():
             raise RuntimeError('Both concurrent public HTTPS connections must succeed')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
+                  'bulk_https_checksum_verified': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
                   'public_https_connections': boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK'),
                   'seconds': round(time.monotonic() - started, 1)}
