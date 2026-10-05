@@ -135,6 +135,10 @@ while not pathlib.Path('/var/lib/claude-isolation-ready').is_file():
     if time.monotonic() >= deadline:
         raise RuntimeError('Automatic desktop installation did not complete')
     time.sleep(5)
+if not pathlib.Path('/etc/cloud/cloud-init.disabled').is_file():
+    raise RuntimeError('Reboot test must not rely on cloud-init boot commands')
+if subprocess.check_output(['systemctl', 'is-enabled', 'claude-gateway.service'], text=True).strip() != 'enabled':
+    raise RuntimeError('Private gateway is not enabled for subsequent boots')
 for package in ('claude-desktop', 'firefox'):
     installed = subprocess.check_output(['dpkg-query', '-W', '-f=${db:Status-Status}', package], text=True)
     if installed != 'installed':
@@ -175,6 +179,98 @@ def qemu(directory):
     if not executable:
         raise RuntimeError('Windows QEMU installation failed')
     return executable
+
+
+def run_guest(core, path, cfg, report, desktop):
+    report.mkdir(parents=True, exist_ok=True)
+    job = Job()
+    process = None
+    try:
+        with (report / 'core.log').open('wb') as output:
+            process = subprocess.Popen([
+                str(core),
+                'start', '--data', str(path.parent), '--start-gate'],
+                stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            job.assign(process)
+            process.stdin.write(b'GO\n')
+            process.stdin.flush()
+            process.stdin.close()
+            deadline = time.monotonic() + 120
+            while True:
+                try:
+                    boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
+                except OSError:
+                    boot = ''
+                # Do not connect to QMP from the test until the guest has
+                # booted: that used to unblock a broken launcher and hide
+                # its permanent startup hang from CI.
+                if 'Linux version ' in boot:
+                    try:
+                        ready = network_guard.read_state(control_paths(cfg)['ready'])
+                        if isinstance(ready, dict) and ready.get('ready'):
+                            break
+                    except (OSError, ValueError):
+                        pass
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError('Guest did not boot without an external QMP client')
+                time.sleep(.5)
+            for _ in range(2):
+                control = backend.qmp(cfg, 'query-status')
+                if not control.get('running'):
+                    raise RuntimeError('Windows control owner lost the running VM')
+            (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
+            boot_timeout = 1500 if desktop else 420
+            deadline = time.monotonic() + boot_timeout
+            history = report / 'network-events.jsonl'
+            history.write_text('', encoding='utf-8')
+            previous = None
+            while process.poll() is None:
+                try:
+                    state = network_guard.read_state(cfg['network_status'])
+                    state['permission_current'] = network_guard.permitted(cfg['network_status'])
+                    if state != previous:
+                        with history.open('a', encoding='utf-8') as events:
+                            events.write(json.dumps(state) + '\n')
+                        previous = state
+                except (OSError, ValueError, TypeError):
+                    pass
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(process.args, boot_timeout)
+                try:
+                    process.wait(timeout=.5)
+                except subprocess.TimeoutExpired:
+                    pass
+            if process.returncode:
+                raise RuntimeError('Packaged launcher failed during guest boot')
+    finally:
+        # Preserve final state as well as the transitions collected above.
+        try:
+            state = network_guard.read_state(cfg['network_status'])
+            state['permission_current'] = network_guard.permitted(cfg['network_status'])
+            (report / 'network-state.json').write_text(json.dumps(state), encoding='utf-8')
+        except (OSError, ValueError, TypeError):
+            pass
+        network_guard.revoke(None, cfg['network_status'])
+        job.close()
+        if process and process.poll() is None:
+            process.wait(timeout=10)
+        if Path(cfg['boot_log']).is_file():
+            shutil.copy2(cfg['boot_log'], report / 'boot.log')
+    boot = (report / 'boot.log').read_text(encoding='utf-8', errors='replace')
+    for marker in ('DIRECT-BLOCKED', 'LOCAL-BLOCKED', 'PUBLIC-HTTPS-OK', 'BULK-HTTPS-OK'):
+        if 'WINDOWS-INTEGRATION: ' + marker not in boot:
+            lines = boot.splitlines()
+            for index, line in enumerate(lines):
+                if any(word in line for word in ('WINDOWS-INTEGRATION:', 'Traceback', 'Error:', 'ci-probe.py')):
+                    print('\n'.join(lines[max(0, index - 2):index + 12]))
+            print((report / 'core.log').read_text(encoding='utf-8', errors='replace')[-12000:])
+            raise RuntimeError('Guest network check failed: ' + marker)
+    if boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK') != 2:
+        raise RuntimeError('Both concurrent public HTTPS connections must succeed')
+    if desktop and 'WINDOWS-INTEGRATION: DESKTOP-READY' not in boot:
+        raise RuntimeError('Full automatic desktop and applications were not verified')
+    return boot
 
 
 def main():
@@ -222,7 +318,19 @@ def main():
             cloud_data = json.loads(environment.cloud_config(cfg).split('\n', 1)[1])
             cloud_data['write_files'].append({'path': '/ci-probe.py',
                                              'content': DESKTOP_PROBE + PROBE, 'permissions': '0600'})
-            cloud_data['runcmd'] += [['python3', '/ci-probe.py'], ['systemctl', 'poweroff']]
+            cloud_data['write_files'].append({'path': '/etc/systemd/system/ci-reboot-probe.service',
+                'content': ('[Unit]\nDescription=Verify guest after reboot\n'
+                            'After=lightdm.service claude-gateway.service\n'
+                            'Wants=lightdm.service claude-gateway.service\n'
+                            'ConditionPathExists=/var/lib/claude-isolation-ready\n'
+                            '[Service]\nType=oneshot\nTimeoutStartSec=300\n'
+                            'StandardOutput=journal+console\nStandardError=journal+console\n'
+                            'ExecStart=/usr/bin/python3 /ci-probe.py\n'
+                            'ExecStartPost=/usr/bin/systemctl --no-block poweroff\n'
+                            '[Install]\nWantedBy=multi-user.target\n'), 'permissions': '0644'})
+            cloud_data['runcmd'] += [['systemctl', 'daemon-reload'],
+                                    ['systemctl', 'enable', 'ci-reboot-probe.service'],
+                                    ['python3', '/ci-probe.py'], ['systemctl', 'poweroff']]
         cloud = '#cloud-config\n' + json.dumps(cloud_data)
         # This guest is disposable and has never booted. No account data is
         # copied. The desktop mode uses the production bootstrap unchanged.
@@ -238,95 +346,18 @@ def main():
         # used by the GUI, rather than bypassing it with the generic CLI.
         subprocess.run([str(core), 'accel-tcg', '--data', str(path.parent)],
                        check=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
-        job = Job()
-        process = None
-        try:
-            with (report / 'core.log').open('wb') as output:
-                process = subprocess.Popen([
-                    str(core),
-                    'start', '--data', str(path.parent), '--start-gate'],
-                    stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
-                    creationflags=subprocess.CREATE_NO_WINDOW)
-                job.assign(process)
-                process.stdin.write(b'GO\n')
-                process.stdin.flush()
-                process.stdin.close()
-                deadline = time.monotonic() + 120
-                while True:
-                    try:
-                        boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
-                    except OSError:
-                        boot = ''
-                    # Do not connect to QMP from the test until the guest has
-                    # booted: that used to unblock a broken launcher and hide
-                    # its permanent startup hang from CI.
-                    if 'Linux version ' in boot:
-                        try:
-                            ready = network_guard.read_state(control_paths(cfg)['ready'])
-                            if isinstance(ready, dict) and ready.get('ready'):
-                                break
-                        except (OSError, ValueError):
-                            pass
-                    if process.poll() is not None or time.monotonic() >= deadline:
-                        raise RuntimeError('Guest did not boot without an external QMP client')
-                    time.sleep(.5)
-                for _ in range(2):
-                    control = backend.qmp(cfg, 'query-status')
-                    if not control.get('running'):
-                        raise RuntimeError('Windows control owner lost the running VM')
-                (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
-                boot_timeout = 1500 if args.desktop else 420
-                deadline = time.monotonic() + boot_timeout
-                history = report / 'network-events.jsonl'
-                history.write_text('', encoding='utf-8')
-                previous = None
-                while process.poll() is None:
-                    try:
-                        state = network_guard.read_state(cfg['network_status'])
-                        state['permission_current'] = network_guard.permitted(cfg['network_status'])
-                        if state != previous:
-                            with history.open('a', encoding='utf-8') as events:
-                                events.write(json.dumps(state) + '\n')
-                            previous = state
-                    except (OSError, ValueError, TypeError):
-                        pass
-                    if time.monotonic() >= deadline:
-                        raise subprocess.TimeoutExpired(process.args, boot_timeout)
-                    try:
-                        process.wait(timeout=.5)
-                    except subprocess.TimeoutExpired:
-                        pass
-                if process.returncode:
-                    raise RuntimeError('Packaged launcher failed during guest boot')
-        finally:
-            # Preserve final state as well as the transitions collected above.
-            try:
-                state = network_guard.read_state(cfg['network_status'])
-                state['permission_current'] = network_guard.permitted(cfg['network_status'])
-                (report / 'network-state.json').write_text(json.dumps(state), encoding='utf-8')
-            except (OSError, ValueError, TypeError):
-                pass
-            network_guard.revoke(None, cfg['network_status'])
-            job.close()
-            if process and process.poll() is None:
-                process.wait(timeout=10)
-            if Path(cfg['boot_log']).is_file():
-                shutil.copy2(cfg['boot_log'], report / 'boot.log')
-        boot = (report / 'boot.log').read_text(encoding='utf-8', errors='replace')
-        for marker in ('DIRECT-BLOCKED', 'LOCAL-BLOCKED', 'PUBLIC-HTTPS-OK', 'BULK-HTTPS-OK'):
-            if 'WINDOWS-INTEGRATION: ' + marker not in boot:
-                lines = boot.splitlines()
-                for index, line in enumerate(lines):
-                    if any(word in line for word in ('WINDOWS-INTEGRATION:', 'Traceback', 'Error:', 'ci-probe.py')):
-                        print('\n'.join(lines[max(0, index - 2):index + 12]))
-                print((report / 'core.log').read_text(encoding='utf-8', errors='replace')[-12000:])
-                raise RuntimeError('Guest network check failed: ' + marker)
-        if boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK') != 2:
-            raise RuntimeError('Both concurrent public HTTPS connections must succeed')
-        if args.desktop and 'WINDOWS-INTEGRATION: DESKTOP-READY' not in boot:
-            raise RuntimeError('Full automatic desktop and applications were not verified')
+        boots = []
+        for cycle in range(2 if args.desktop else 1):
+            print('Verifying guest boot', cycle + 1, flush=True)
+            evidence = report / ('boot-' + str(cycle + 1))
+            boot = run_guest(core, path, cfg, evidence, args.desktop)
+            boots.append(boot)
+        # Retain the original evidence names for existing artifact consumers.
+        for file in evidence.iterdir():
+            shutil.copy2(file, report / file.name)
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'sdl_guest_window': True, 'automatic_desktop_verified': args.desktop,
+                  'boot_cycles': len(boots), 'gateway_after_reboot_verified': len(boots) == 2,
                   'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
                   'bulk_https_checksum_verified': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,

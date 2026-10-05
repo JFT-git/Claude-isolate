@@ -20,6 +20,7 @@ from session_lock import exclusive
 from windows import gnupg
 
 VERSION = '0.3.10'
+GUEST_GATEWAY_VERSION = 1
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
 
@@ -45,7 +46,8 @@ def config(data):
                                memory_mb=3072, cpus=2, disk=str(data / 'desktop.qcow2'),
                                seed=str(data / 'seed.iso'), boot_log=str(data / 'boot.log'),
                                qmp_pipe='claude-isolate-' + uuid.uuid4().hex,
-                               network_status=str(data / 'network.json')))
+                               network_status=str(data / 'network.json'),
+                               guest_gateway_version=GUEST_GATEWAY_VERSION))
     return path, environment.load_config(path)
 
 
@@ -165,6 +167,24 @@ def start_environment(path, cfg):
 def prepare(data, cfg):
     disk, seed = Path(cfg['disk']), Path(cfg['seed'])
     if disk.is_file() and seed.is_file():
+        if cfg.get('guest_gateway_version') == GUEST_GATEWAY_VERSION:
+            return
+        # Old installed guests disabled cloud-init before persisting the
+        # serial gateway. Replacing their seed cannot repair that root disk.
+        # Prepare a separate corrected guest and keep the old disk/seed and
+        # configuration intact. Never silently erase files or copy logins.
+        replacement = dict(cfg, disk=str(data / 'desktop-gateway-v1.qcow2'),
+                           seed=str(data / 'seed-gateway-v1.iso'),
+                           guest_gateway_version=GUEST_GATEWAY_VERSION)
+        write_config(data / 'environment-before-gateway-upgrade.json', cfg)
+        emit('Обновляю Linux для исправления сети после перезапуска. Старый диск сохранён; аккаунты не копируются.')
+        if not (Path(replacement['disk']).is_file() and Path(replacement['seed']).is_file()):
+            base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))
+            environment.prepare(replacement, base, digest)
+            base.unlink(missing_ok=True)
+        write_config(data / 'environment.json', replacement)
+        cfg.update(replacement)
+        emit('Исправленная среда подготовлена. Приложения установятся автоматически.')
         return
     if disk.exists() or seed.exists():
         raise RuntimeError('Найдена неполная среда. Существующий диск автоматически не перезаписывается.')

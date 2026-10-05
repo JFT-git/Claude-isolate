@@ -16,17 +16,26 @@ from windows.pipe import gateway_pipe
 
 def boot_command(root):
     stream = (root / 'guest/serial-stream.py').read_text(encoding='utf-8')
-    proxy = shlex.join(['python3', '-c', stream])
+    stream_path = '/usr/local/lib/claude-isolate/serial-stream.py'
+    proxy = shlex.join(['/usr/bin/python3', stream_path])
     command = ['/usr/bin/ssh', '-N', '-T', '-oBatchMode=yes',
                '-oPreferredAuthentications=none', '-oStrictHostKeyChecking=no',
                '-oUserKnownHostsFile=/dev/null', '-oExitOnForwardFailure=yes',
                '-oServerAliveInterval=10', '-oServerAliveCountMax=2',
                '-oProxyCommand=' + proxy,
                '-L', '10.0.2.100:7890:claude.gateway:7890', 'claude-gateway@private-vm']
-    return ['sh', '-c',
-            'ip address replace 10.0.2.100/32 dev lo; '
-            '(while true; do ' + shlex.join(command) +
-            '; sleep 1; done) </dev/null >/run/claude-gateway.log 2>&1 &']
+    service = ('[Unit]\nDescription=Private isolated Windows gateway\n'
+               'After=systemd-udevd.service\n[Service]\nType=simple\n'
+               'ExecStartPre=/usr/sbin/ip address replace 10.0.2.100/32 dev lo\n'
+               'ExecStart=' + shlex.join(command) + '\nRestart=always\nRestartSec=1\n'
+               '[Install]\nWantedBy=multi-user.target\n')
+    # A cloud-init background process disappears on reboot, and production
+    # disables cloud-init after setup. Persist an independently enabled unit.
+    return ['sh', '-c', 'set -eu; install -d -m 700 /usr/local/lib/claude-isolate; '
+            'printf %s ' + shlex.quote(stream) + ' > ' + stream_path + '; '
+            'chmod 700 ' + stream_path + '; printf %s ' + shlex.quote(service) +
+            ' > /etc/systemd/system/claude-gateway.service; '
+            'systemctl daemon-reload; systemctl enable --now claude-gateway.service']
 
 
 class Gateway:

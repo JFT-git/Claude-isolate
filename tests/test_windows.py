@@ -15,6 +15,65 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_legacy_guest_upgrade_preserves_old_disks_and_does_not_repeat(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            path, cfg = backend.config(data)
+            cfg.pop('guest_gateway_version')
+            backend.write_config(path, cfg)
+            old_disk, old_seed = Path(cfg['disk']), Path(cfg['seed'])
+            old_disk.write_bytes(b'previous-user-disk')
+            old_seed.write_bytes(b'previous-seed')
+            base = data / 'base.img'
+            base.touch()
+            def prepare(replacement, image, digest):
+                Path(replacement['disk']).write_bytes(b'new-disk')
+                Path(replacement['seed']).write_bytes(b'new-seed')
+            with patch.object(backend, 'emit'), patch.object(backend, 'find_tool', return_value='gpg'), \
+                 patch.object(backend.ubuntu_image, 'download', return_value=(base, 'digest')) as download, \
+                 patch.object(backend.environment, 'prepare', side_effect=prepare) as build:
+                backend.prepare(data, cfg)
+                backend.prepare(data, cfg)
+                download.assert_called_once()
+                build.assert_called_once()
+            self.assertEqual(old_disk.read_bytes(), b'previous-user-disk')
+            self.assertEqual(old_seed.read_bytes(), b'previous-seed')
+            self.assertEqual(environment.load_config(path), cfg)
+            self.assertNotEqual(Path(cfg['disk']), old_disk)
+            backup = environment.load_config(data / 'environment-before-gateway-upgrade.json')
+            self.assertEqual(Path(backup['disk']), old_disk)
+
+    def test_failed_guest_upgrade_keeps_existing_configuration_and_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            path, cfg = backend.config(data)
+            cfg.pop('guest_gateway_version')
+            backend.write_config(path, cfg)
+            original = dict(cfg)
+            Path(cfg['disk']).write_bytes(b'old-disk')
+            Path(cfg['seed']).write_bytes(b'old-seed')
+            with patch.object(backend, 'emit'), patch.object(backend, 'find_tool', return_value='gpg'), \
+                 patch.object(backend.ubuntu_image, 'download', side_effect=OSError('Offline')):
+                with self.assertRaises(OSError):
+                    backend.prepare(data, cfg)
+            self.assertEqual(cfg, original)
+            self.assertEqual(environment.load_config(path), original)
+            self.assertEqual(Path(cfg['disk']).read_bytes(), b'old-disk')
+
+    def test_gateway_boot_command_installs_independent_enabled_service(self):
+        from windows.serial_gateway import boot_command
+        command = boot_command(environment.ROOT)
+        self.assertEqual(command[:2], ['sh', '-c'])
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / 'gateway.sh'
+            script.write_text(command[2], encoding='utf-8')
+            if os.name != 'nt':
+                subprocess.run(['sh', '-n', str(script)], check=True)
+        self.assertIn('WantedBy=multi-user.target', command[2])
+        self.assertIn('Restart=always', command[2])
+        self.assertIn('enable --now claude-gateway.service', command[2])
+        self.assertNotIn('while true', command[2])
+
     def test_ready_status_after_reboot_without_first_install_marker(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, cfg = backend.config(Path(temporary))
