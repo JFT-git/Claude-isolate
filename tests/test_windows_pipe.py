@@ -1,5 +1,6 @@
 """Real Windows full-duplex pipe operations, including a blocked reader."""
 import ctypes
+import importlib.util
 from ctypes import wintypes
 import os
 import threading
@@ -8,7 +9,7 @@ import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from windows.pipe import NamedPipe, Overlapped, api, gateway_pipe, is_wine
+from windows.pipe import NamedPipe, Overlapped, api, gateway_pipe, is_wine, WinePipe
 
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows named-pipe test')
@@ -76,7 +77,12 @@ class NativePipeTests(unittest.TestCase):
             # A synchronous pipe serializing read/write would deadlock here.
             def transmit():
                 try:
-                    self.assertEqual(client.write(payload), len(payload))
+                    offset = 0
+                    while offset < len(payload):
+                        count = client.write(payload[offset:])
+                        self.assertGreater(count, 0)
+                        self.assertLessEqual(count, 2048)
+                        offset += count
                 except Exception as error:
                     failures.append(error)
             writer = threading.Thread(target=transmit, daemon=True)
@@ -108,7 +114,10 @@ class NativePipeTests(unittest.TestCase):
         def operation(writing):
             try:
                 if writing:
-                    client.write(b'x' * (2 * 1024 * 1024))
+                    payload = b'x' * (2 * 1024 * 1024)
+                    offset = 0
+                    while offset < len(payload):
+                        offset += client.write(payload[offset:])
                 else:
                     client.read(1)
             except OSError:
@@ -159,3 +168,21 @@ class GatewayPipeSelectionTests(unittest.TestCase):
                     load.assert_called_once_with('ntdll')
         finally:
             is_wine.cache_clear()
+
+
+class PipePacketTests(unittest.TestCase):
+    @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'SSH dependency not installed')
+    def test_paramiko_retries_bounded_partial_sends_without_losing_binary_data(self):
+        from paramiko.packet import Packetizer
+        received = bytearray()
+        class BoundedPeer:
+            def write(self, data):
+                if len(data) > 2048:
+                    raise BufferError('QEMU pipe frame exceeds the safe bound')
+                received.extend(data)
+                return len(data)
+        stream = WinePipe.__new__(WinePipe)
+        stream.writer = BoundedPeer()
+        payload = bytes(range(256)) * 513
+        Packetizer(stream).write_all(payload)
+        self.assertEqual(received, payload)

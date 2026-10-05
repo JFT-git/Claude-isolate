@@ -108,7 +108,10 @@ class NamedPipe:
         return self.operation(False, count)
 
     def write(self, data):
-        return self.operation(True, bytes(data))
+        # Bound QEMU's input. The Windows backend reads into a fixed 4096-byte
+        # buffer; pending writes must not expose larger frames to its peek.
+        # Socket-style callers retry partial sends; control messages are small.
+        return self.operation(True, bytes(data[:2048]))
 
     def readline(self, limit=65537):
         while True:
@@ -192,7 +195,11 @@ class WinePipe:
         return self.pipe.read(count)
 
     def send(self, data):
-        return self.writer.write(data)
+        # QEMU's Windows reader has a 4096-byte stack buffer. Wine can
+        # expose an entire pending write through PeekNamedPipe, so keep each
+        # write below half that buffer (the pipe itself buffers 2048 bytes).
+        # Paramiko retries the remaining bytes on partial socket sends.
+        return self.writer.write(data[:2048])
 
     def settimeout(self, value):
         pass

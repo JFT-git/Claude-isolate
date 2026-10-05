@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import environment
@@ -141,6 +141,24 @@ class WindowsBackendTests(unittest.TestCase):
             gateway.close()
             thread.join(timeout=5)
             server.close()
+
+    def test_channel_close_eof_still_reaps_worker_and_releases_capacity(self):
+        from windows.serial_gateway import Gateway
+        gateway = Gateway({'network_mode': 'system', 'web_access': 'public'}, {})
+        channel, process = Mock(), Mock()
+        channel.recv.return_value = b''
+        channel.close.side_effect = EOFError('SSH connection ended')
+        process.stdout.read1.return_value = b''
+        process.poll.return_value = None
+        self.assertTrue(gateway.capacity.acquire(blocking=False))
+        with patch('windows.serial_gateway.subprocess.Popen', return_value=process):
+            gateway.channel(channel)
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+        process.stdout.close.assert_called_once()
+        self.assertNotIn(process, gateway.processes)
+        self.assertTrue(all(gateway.capacity.acquire(blocking=False) for _ in range(64)))
+        self.assertFalse(gateway.capacity.acquire(blocking=False))
 
     def test_native_gnupg_bad_checksum_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as temporary, \

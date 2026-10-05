@@ -75,7 +75,10 @@ class Gateway:
         except (OSError, EOFError):
             pass
         finally:
-            channel.close()
+            try:
+                channel.close()
+            except (OSError, EOFError):
+                pass
             if process:
                 if process.poll() is None:
                     process.terminate()
