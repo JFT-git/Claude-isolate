@@ -270,6 +270,8 @@ def run_guest(core, path, cfg, report, desktop):
         raise RuntimeError('Both concurrent public HTTPS connections must succeed')
     if desktop and 'WINDOWS-INTEGRATION: DESKTOP-READY' not in boot:
         raise RuntimeError('Full automatic desktop and applications were not verified')
+    if desktop and 'CLAUDE-ISOLATION: desktop-ready' not in boot:
+        raise RuntimeError('Production graphical readiness was not reported on this boot')
     return boot
 
 
@@ -320,8 +322,8 @@ def main():
                                              'content': DESKTOP_PROBE + PROBE, 'permissions': '0600'})
             cloud_data['write_files'].append({'path': '/etc/systemd/system/ci-reboot-probe.service',
                 'content': ('[Unit]\nDescription=Verify guest after reboot\n'
-                            'After=lightdm.service claude-gateway.service\n'
-                            'Wants=lightdm.service claude-gateway.service\n'
+                            'After=claude-desktop-ready.service claude-gateway.service\n'
+                            'Wants=claude-desktop-ready.service claude-gateway.service\n'
                             'ConditionPathExists=/var/lib/claude-isolation-ready\n'
                             '[Service]\nType=oneshot\nTimeoutStartSec=300\n'
                             'StandardOutput=journal+console\nStandardError=journal+console\n'

@@ -145,4 +145,4 @@ systemctl unmask lightdm.service
 systemctl enable lightdm
 systemctl restart lightdm
 touch /etc/cloud/cloud-init.disabled
-echo 'CLAUDE-ISOLATION: desktop-ready' > /dev/console
+systemctl enable --now claude-desktop-ready.service

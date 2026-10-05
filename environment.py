@@ -246,6 +246,23 @@ WantedBy=multi-user.target
         file('/etc/claude-isolation.nft', (ROOT / 'guest/firewall.nft').read_text()),
         file('/usr/local/sbin/claude-repositories', (ROOT / 'guest/repositories.sh').read_text(), '0700'),
         file('/usr/local/sbin/bootstrap-claude', (ROOT / 'guest/bootstrap.sh').read_text(), '0700'),
+        file('/usr/local/sbin/claude-desktop-ready', (ROOT / 'guest/desktop-ready.sh').read_text(), '0700'),
+        file('/etc/systemd/system/claude-desktop-ready.service', '''[Unit]
+Description=Report isolated graphical session readiness
+After=lightdm.service
+Wants=lightdm.service
+ConditionPathExists=/var/lib/claude-isolation-ready
+StartLimitIntervalSec=0
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/claude-desktop-ready
+TimeoutStartSec=330
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=graphical.target
+'''),
         file('/usr/local/bin/claude-isolated', (ROOT / 'guest/launch.sh').read_text(), '0755'),
         file('/usr/local/sbin/claude-display-install', (ROOT / 'guest/display-setup.sh').read_text(), '0700'),
         file('/etc/lightdm/lightdm.conf.d/50-isolated.conf',

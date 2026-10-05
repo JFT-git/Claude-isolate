@@ -19,8 +19,8 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.10'
-GUEST_GATEWAY_VERSION = 1
+VERSION = '0.3.11'
+GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
 
@@ -173,10 +173,13 @@ def prepare(data, cfg):
         # serial gateway. Replacing their seed cannot repair that root disk.
         # Prepare a separate corrected guest and keep the old disk/seed and
         # configuration intact. Never silently erase files or copy logins.
-        replacement = dict(cfg, disk=str(data / 'desktop-gateway-v1.qcow2'),
-                           seed=str(data / 'seed-gateway-v1.iso'),
+        replacement = dict(cfg, disk=str(data / f'desktop-gateway-v{GUEST_GATEWAY_VERSION}.qcow2'),
+                           seed=str(data / f'seed-gateway-v{GUEST_GATEWAY_VERSION}.iso'),
                            guest_gateway_version=GUEST_GATEWAY_VERSION)
-        write_config(data / 'environment-before-gateway-upgrade.json', cfg)
+        write_config(data / f'environment-before-gateway-v{GUEST_GATEWAY_VERSION}-upgrade.json', cfg)
+        original_backup = data / 'environment-before-gateway-upgrade.json'
+        if not original_backup.exists():
+            write_config(original_backup, cfg)
         emit('Обновляю Linux для исправления сети после перезапуска. Старый диск сохранён; аккаунты не копируются.')
         if not (Path(replacement['disk']).is_file() and Path(replacement['seed']).is_file()):
             base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))

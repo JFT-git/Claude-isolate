@@ -13,6 +13,19 @@ import environment
 
 
 class PackagingTests(unittest.TestCase):
+    def test_graphical_readiness_survives_disabled_cloud_init(self):
+        cloud = json.loads(environment.cloud_config().split('\n', 1)[1])
+        files = {item['path']: item['content'] for item in cloud['write_files']}
+        service = files['/etc/systemd/system/claude-desktop-ready.service']
+        self.assertIn('WantedBy=graphical.target', service)
+        self.assertIn('Restart=on-failure', service)
+        self.assertIn('ExecStart=/usr/local/sbin/claude-desktop-ready', service)
+        self.assertEqual(files['/usr/local/sbin/claude-desktop-ready'],
+                         (ROOT / 'guest/desktop-ready.sh').read_text())
+        bootstrap = files['/usr/local/sbin/bootstrap-claude']
+        self.assertIn('enable --now claude-desktop-ready.service', bootstrap)
+        self.assertNotIn("echo 'CLAUDE-ISOLATION: desktop-ready'", bootstrap)
+
     def test_sca_inventory_matches_guest_installed_packages(self):
         text = (ROOT / 'guest/bootstrap.sh').read_text()
         self.assertIn('CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories', text)
