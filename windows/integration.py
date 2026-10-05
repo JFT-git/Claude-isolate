@@ -99,6 +99,7 @@ def main():
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='win-boot-', dir=build) as temporary:
         directory = Path(temporary)
+        print('Installing checksum-verified Windows QEMU…', flush=True)
         executable = qemu(directory)
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
@@ -109,9 +110,13 @@ def main():
         # Use the actual packaged first-run setup, including GPG, qemu-img,
         # image download/signature checks and the bundled ISO writer.
         with (report / 'prepare.log').open('wb') as output:
-            subprocess.run([str(core), 'prepare', '--data', str(path.parent)],
-                           stdout=output, stderr=subprocess.STDOUT, check=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW, timeout=600)
+            print('Preparing Ubuntu with the packaged executable…', flush=True)
+            prepared = subprocess.run([str(core), 'prepare', '--data', str(path.parent)],
+                                      stdout=output, stderr=subprocess.STDOUT,
+                                      creationflags=subprocess.CREATE_NO_WINDOW, timeout=600)
+        if prepared.returncode:
+            print((report / 'prepare.log').read_text(encoding='utf-8', errors='replace')[-12000:])
+            raise RuntimeError('Packaged first-run setup failed')
         cfg = environment.load_config(path)
         cloud = '#cloud-config\n' + json.dumps({
             'hostname': 'windows-isolation-test', 'ssh_pwauth': False,
@@ -127,6 +132,7 @@ def main():
         prepared_seed = directory / 'probe.iso'
         backend.seed_iso(seed_directory, prepared_seed)
         os.replace(prepared_seed, cfg['seed'])
+        print('Booting disposable Ubuntu and checking gateway…', flush=True)
         job = Job()
         process = None
         try:
