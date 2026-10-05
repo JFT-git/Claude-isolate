@@ -163,7 +163,7 @@ def main():
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
-        cfg.update(qemu_executable=str(executable), accelerator='tcg', display='none', memory_mb=2048)
+        cfg.update(qemu_executable=str(executable), accelerator='tcg', display='sdl', memory_mb=2048)
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
         # Use the actual packaged first-run setup, including GPG, qemu-img,
