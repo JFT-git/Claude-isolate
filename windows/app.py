@@ -37,8 +37,8 @@ class Application:
         self.last_error = None
         self.messages = queue.Queue()
         root.title('Claude Isolate')
-        root.geometry('700x420')
-        root.minsize(620, 400)
+        root.geometry('700x470')
+        root.minsize(620, 450)
         root.option_add('*Font', '{Segoe UI} 10')
         style = ttk.Style(root)
         if 'vista' in style.theme_names():
@@ -70,6 +70,14 @@ class Application:
         _, cfg = backend.config(data)
         self.resources.current(0 if cfg['memory_mb'] <= 3072 else 1)
         self.resources.bind('<<ComboboxSelected>>', self.set_resources)
+        acceleration = ttk.Frame(frame)
+        acceleration.pack(fill='x', pady=(4, 8))
+        ttk.Label(acceleration, text='Запуск:').pack(side='left')
+        self.acceleration = ttk.Combobox(acceleration, state='readonly', width=42,
+            values=['Автоматически', 'Совместимый: без гипервизора', 'Аппаратный: WHPX'])
+        self.acceleration.pack(side='left', padx=8)
+        self.acceleration.current(backend.ACCELERATION_MODES.index(cfg.get('acceleration_mode', 'auto')))
+        self.acceleration.bind('<<ComboboxSelected>>', self.set_acceleration)
         ttk.Button(frame, text='Открыть папку среды и журналы',
                    command=lambda: os.startfile(str(data))).pack(anchor='w', pady=(8, 0))
         ttk.Label(frame, text='Первый запуск загружает Ubuntu и устанавливает приложения. '
@@ -128,6 +136,12 @@ class Application:
         except (OSError, RuntimeError) as error:
             self.message.set(str(error))
 
+    def set_acceleration(self, event=None):
+        try:
+            self.launch('accel-' + backend.ACCELERATION_MODES[self.acceleration.current()])
+        except (OSError, RuntimeError) as error:
+            self.message.set(str(error))
+
     def stop(self, restart=False):
         if not self.vm_started or self.stopping:
             return
@@ -181,13 +195,15 @@ class Application:
                 self.restarting = self.closing = self.stopping = False
             if value.get('running'):
                 self.vm_started = True
+            elif value.get('running') is False:
+                self.vm_started = False
             if value.get('message'):
                 self.message.set(value['message'])
                 if value.get('error'):
                     self.last_error = value['message']
             if value.get('accelerator') == 'tcg':
-                self.network.set('Доступна программная эмуляция. Для быстрого запуска включите '
-                                 '«Платформа гипервизора Windows» и перезагрузите компьютер.')
+                self.network.set('Совместимый режим без гипервизора: загрузка и установка '
+                                 'могут занимать больше времени. VPN должен оставаться включён.')
         if self.task and self.task.poll() is not None:
             returncode = self.task.returncode
             self.task = None
@@ -217,6 +233,7 @@ class Application:
         for button in (self.stop_button, self.restart_button):
             button.configure(state='normal' if running and not self.auxiliary else 'disabled')
         self.resources.configure(state='disabled' if self.task else 'readonly')
+        self.acceleration.configure(state='disabled' if self.task else 'readonly')
         self.root.after(500, self.poll)
 
 

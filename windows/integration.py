@@ -159,13 +159,17 @@ def main():
         backend.seed_iso(seed_directory, prepared_seed)
         os.replace(prepared_seed, cfg['seed'])
         print('Booting disposable Ubuntu and checking gateway…', flush=True)
+        # Exercise the same persistent compatibility selection and start action
+        # used by the GUI, rather than bypassing it with the generic CLI.
+        subprocess.run([str(core), 'accel-tcg', '--data', str(path.parent)],
+                       check=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
         job = Job()
         process = None
         try:
             with (report / 'core.log').open('wb') as output:
                 process = subprocess.Popen([
                     str(core),
-                    'cli', 'start', '--config', str(path), '--start-gate'],
+                    'start', '--data', str(path.parent), '--start-gate'],
                     stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW)
                 job.assign(process)

@@ -15,6 +15,94 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_failed_whpx_retries_once_with_same_exit_ip_and_remembers_tcg(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            error = subprocess.CalledProcessError(3489660927, ['qemu'])
+            error.initial_exit_ip = '8.8.8.8'
+            error.network_locked = False
+            with patch.object(backend, 'acceleration', return_value='whpx'), \
+                 patch.object(environment, 'main', side_effect=[error, None]) as launch, \
+                 patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
+                backend.start_environment(path, cfg)
+            self.assertEqual(launch.call_args_list[1].kwargs,
+                             {'raise_errors': True, 'expected_exit_ip': '8.8.8.8'})
+            saved = environment.load_config(path)
+            self.assertTrue(saved['whpx_failed'])
+            self.assertEqual(saved['whpx_failure_code'], 3489660927)
+            with patch.object(backend, 'acceleration', return_value='whpx') as detect:
+                self.assertEqual(backend.select_acceleration(saved), 'tcg')
+                detect.assert_not_called()
+
+    def test_network_failure_and_explicit_hardware_mode_do_not_trigger_retry(self):
+        for failure, mode in [(RuntimeError('IP blocked'), 'auto'),
+                              (subprocess.CalledProcessError(1, ['qemu']), 'whpx'),
+                              (KeyboardInterrupt(), 'auto')]:
+            with self.subTest(mode=mode, failure=type(failure).__name__), \
+                 tempfile.TemporaryDirectory() as temporary:
+                path, cfg = backend.config(Path(temporary))
+                cfg['acceleration_mode'] = mode
+                with patch.object(backend, 'acceleration', return_value='whpx'), \
+                     patch.object(environment, 'main', side_effect=failure) as launch, \
+                     patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
+                    with self.assertRaises(type(failure)):
+                        backend.start_environment(path, cfg)
+                self.assertEqual(launch.call_count, 1)
+                self.assertNotIn('whpx_failed', environment.load_config(path))
+
+    def test_a_permanent_network_block_prevents_automatic_recovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            error = subprocess.CalledProcessError(3489660927, ['qemu'])
+            error.initial_exit_ip, error.network_locked = '8.8.8.8', True
+            with patch.object(backend, 'acceleration', return_value='whpx'), \
+                 patch.object(environment, 'main', side_effect=error) as launch, \
+                 patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
+                with self.assertRaisesRegex(RuntimeError, 'Автоматический перезапуск отменён'):
+                    backend.start_environment(path, cfg)
+            self.assertEqual(launch.call_count, 1)
+
+    def test_late_crash_is_not_automatically_restarted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            with patch.object(backend, 'acceleration', return_value='whpx'), \
+                 patch.object(environment, 'main', side_effect=subprocess.CalledProcessError(1, ['qemu'])) as launch, \
+                 patch.object(backend.time, 'monotonic', side_effect=[0, 181]), \
+                 patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    backend.start_environment(path, cfg)
+            self.assertEqual(launch.call_count, 1)
+
+    def test_compatibility_setting_survives_launch_and_invalid_mode_is_rejected(self):
+        with patch.object(backend, 'acceleration') as detect:
+            self.assertEqual(backend.select_acceleration({'acceleration_mode': 'tcg'}), 'tcg')
+            detect.assert_not_called()
+            with self.assertRaises(ValueError):
+                backend.select_acceleration({'acceleration_mode': 'whpx,ssd=off'})
+
+    def test_whpx_does_not_advertise_nested_amd_virtualization(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, cfg = backend.config(Path(temporary))
+            with patch.object(environment.platform, 'system', return_value='Windows'):
+                cmd = environment.command(dict(cfg, accelerator='whpx'), check=False)
+            self.assertEqual(cmd[cmd.index('-cpu') + 1], 'qemu64,svm=off')
+
+    def test_recovery_cannot_launch_if_exit_ip_changed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            Path(cfg['disk']).touch()
+            Path(cfg['seed']).touch()
+            result = environment.network_guard.classify({'ip': '1.1.1.1', 'country': 'US'})
+            with patch.object(sys, 'argv', ['core', 'start', '--config', str(path)]), \
+                 patch.object(environment, 'command', return_value=['qemu']), \
+                 patch.object(environment.platform, 'system', return_value='Windows'), \
+                 patch.object(environment.network_guard, 'probe', return_value=result), \
+                 patch.object(environment.subprocess, 'Popen') as process:
+                with self.assertRaisesRegex(RuntimeError, 'IP изменился'):
+                    environment.main(raise_errors=True, expected_exit_ip='8.8.8.8')
+            process.assert_not_called()
+            self.assertFalse(environment.network_guard.permitted(cfg['network_status']))
+
     @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'Windows bridge dependency not installed')
     def test_serial_transport_multiplexes_only_filtered_gateway_channels(self):
         import concurrent.futures

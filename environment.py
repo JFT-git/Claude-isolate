@@ -174,7 +174,9 @@ def command(cfg, check=True):
         net = 'user,id=isolated,restrict=on,ipv6=off'
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
-           '-accel', accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64' if accel == 'whpx' else 'max',
+           # Nested virtualization is unnecessary for this desktop. qemu64
+           # advertises AMD SVM by default, even on an Intel WHPX host.
+           '-accel', accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64,svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
            '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
@@ -435,7 +437,7 @@ def prepare(cfg, base, digest):
     print('Environment prepared. No account credentials were copied.')
 
 
-def main():
+def main(*, raise_errors=False, expected_exit_ip=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'prepare', 'start', 'plan', 'relay', 'country'])
     parser.add_argument('--config', default=str(ROOT / 'environment.json'))
@@ -498,6 +500,8 @@ def main():
                             result = network_guard.probe(cfg.get('proxy_port'), cfg['network_mode'])
                             if not result['allowed']:
                                 raise RuntimeError(result['reason'])
+                            if expected_exit_ip is not None and result['ip'] != expected_exit_ip:
+                                raise RuntimeError('IP изменился при восстановлении запуска. Сеть закрыта; перезапустите среду вручную.')
                             if events.verified(initial_generation, result) and network_guard.permitted(lease):
                                 break
                             if time.monotonic() >= startup_deadline:
@@ -519,7 +523,10 @@ def main():
                         try:
                             proc.wait()
                             if proc.returncode:
-                                raise subprocess.CalledProcessError(proc.returncode, cmd)
+                                error = subprocess.CalledProcessError(proc.returncode, cmd)
+                                error.initial_exit_ip = result['ip']
+                                error.network_locked = lease.with_suffix('.revoked').exists()
+                                raise error
                         except BaseException:
                             proc.terminate()
                             try:
@@ -542,6 +549,8 @@ def main():
                             network_guard.publish(status_path, {'allowed': False, 'reason': 'Среда остановлена'})
                         signal.signal(signal.SIGTERM, previous_term)
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.CalledProcessError) as e:
+        if raise_errors:
+            raise
         print(f'Cannot continue: {e}', file=sys.stderr)
         if args.action != 'relay':
             print(json.dumps({'message': str(e), 'error': True}, ensure_ascii=False), flush=True)

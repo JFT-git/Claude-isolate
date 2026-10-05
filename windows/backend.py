@@ -9,6 +9,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import time
 import uuid
 
 import environment
@@ -17,7 +18,8 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.4'
+VERSION = '0.3.5'
+ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
 
 def emit(message, **fields):
@@ -122,6 +124,43 @@ def acceleration():
         return 'tcg'
 
 
+def select_acceleration(cfg):
+    mode = cfg.get('acceleration_mode', 'auto')
+    if mode not in ACCELERATION_MODES:
+        raise ValueError('Неверный режим ускорения')
+    if mode != 'auto':
+        return mode
+    return 'tcg' if cfg.get('whpx_failed') else acceleration()
+
+
+def start_environment(path, cfg):
+    cfg['accelerator'] = select_acceleration(cfg)
+    write_config(path, cfg)
+    emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
+    sys.argv = [sys.argv[0], 'start', '--config', str(path)]
+    started = time.monotonic()
+    try:
+        environment.main(raise_errors=True)
+    except subprocess.CalledProcessError as error:
+        # environment has already reaped QEMU, closed the private SSH bridge,
+        # revoked the lease and released the disk lock before we retry.
+        if (cfg['accelerator'] != 'whpx' or cfg.get('acceleration_mode', 'auto') != 'auto'
+                or time.monotonic() - started > 180):
+            raise
+        if error.network_locked:
+            raise RuntimeError('Сеть была заблокирована во время запуска. '
+                               'Автоматический перезапуск отменён; проверьте VPN и перезапустите среду вручную.') from error
+        cfg.update(accelerator='tcg', whpx_failed=True,
+                   whpx_failure_code=error.returncode)
+        write_config(path, cfg)
+        emit('Аппаратное ускорение Windows завершилось с ошибкой '
+             f'0x{error.returncode & 0xffffffff:08X}. Перехожу на совместимый режим; '
+             'он медленнее. Диск Linux сохранён.', accelerator='tcg', running=False)
+        # A fresh lease must still use the original verified exit IP. An
+        # automatic recovery never silently accepts a VPN/exit change.
+        environment.main(raise_errors=True, expected_exit_ip=error.initial_exit_ip)
+
+
 def prepare(data, cfg):
     disk, seed = Path(cfg['disk']), Path(cfg['seed'])
     if disk.is_file() and seed.is_file():
@@ -194,7 +233,8 @@ def status(cfg, running=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version='Claude Isolate ' + VERSION)
-    parser.add_argument('action', choices=['prepare', 'start', 'stop', 'economy', 'standard'])
+    parser.add_argument('action', choices=['prepare', 'start', 'stop', 'economy', 'standard',
+                                         'accel-auto', 'accel-tcg', 'accel-whpx'])
     parser.add_argument('--data', type=Path, required=True)
     parser.add_argument('--start-gate', action='store_true')
     args = parser.parse_args()
@@ -211,6 +251,13 @@ def main():
             return
         with exclusive(data / 'session.lock'):
             path, cfg = config(data)
+            if args.action.startswith('accel-'):
+                cfg['acceleration_mode'] = args.action.removeprefix('accel-')
+                cfg.pop('whpx_failed', None)
+                cfg.pop('whpx_failure_code', None)
+                write_config(path, cfg)
+                emit('Режим запуска сохранён')
+                return
             if args.action in ('economy', 'standard'):
                 cfg.update(memory_mb=3072 if args.action == 'economy' else 6144,
                            cpus=2 if args.action == 'economy' else 4)
@@ -220,11 +267,9 @@ def main():
             dependencies(data, cfg)
             prepare(data, cfg)
             if args.action == 'start':
-                cfg['accelerator'] = acceleration()
-                write_config(path, cfg)
-                emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
-                sys.argv = [sys.argv[0], 'start', '--config', str(path)]
-                environment.main()
+                emit('Claude Isolate ' + VERSION, version=VERSION,
+                     windows=platform.version(), machine=platform.machine())
+                start_environment(path, cfg)
                 emit('Среда остановлена')
     except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
         emit(str(error), error=True)
