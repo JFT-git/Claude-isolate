@@ -61,6 +61,12 @@ and non-public DoH answers do not gain access. DoH uses normal host routing and
 does not prove VPN use; the external-IP lease remains independently required.
 Cloudflare learns queried names; arbitrary user-defined fake-IP ranges are not supported.
 
+Windows guard files use FILE_SHARE_DELETE readers and FileRenameInfoEx POSIX
+replacement so active readers cannot kill the monitor by blocking an atomic
+lease refresh. Persistent write errors pause access with independent markers
+and keep the monitor retrying; stale leases still expire. This does not extend
+lease lifetime or clear permanent IP-change/revocation markers.
+
 ## Releases and supply chain
 
 Actions are pinned to full commits; Dependabot proposes updates. Python tools have
