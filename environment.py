@@ -181,12 +181,12 @@ def command(cfg, check=True):
            '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
            '-netdev', net, '-device', 'virtio-net-pci,netdev=isolated',
-           # VGA refreshes the Windows SDL surface in the main loop. Virtio
-           # scanout changes from a vCPU can deadlock SDL/User32 on Windows.
-           '-device', ('VGA' if system == 'Windows' and arch == 'x86_64'
-                       else 'virtio-gpu-pci') + ',edid=off,xres=1920,yres=1200',
-           '-device', 'qemu-xhci',
-           '-device', 'usb-kbd', '-device', 'usb-tablet',
+           '-device', 'virtio-gpu-pci,edid=off,xres=1920,yres=1200',
+           '-device', 'qemu-xhci', '-device', 'usb-kbd',
+           # Activating an absolute tablet from a Windows vCPU calls SDL's
+           # mouse-mode notifier and can deadlock User32 against the main
+           # loop. A relative mouse avoids that cross-thread mode transition.
+           '-device', 'usb-mouse' if system == 'Windows' else 'usb-tablet',
            '-monitor', 'none', '-serial', 'none']
     if system == 'Darwin':
         cmd += ['-display', 'cocoa,zoom-to-fit=on,zoom-interpolation=on,full-screen=on']
