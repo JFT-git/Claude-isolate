@@ -128,8 +128,13 @@ bulk_https()
 '''.replace('@BULK_PATH@', gnupg.URL.split('gnupg.org', 1)[1]).replace('@BULK_HASH@', gnupg.SHA256)
 
 DESKTOP_PROBE = '''import pathlib, subprocess, time
-if not pathlib.Path('/var/lib/claude-isolation-ready').is_file():
-    raise RuntimeError('Automatic desktop installation did not complete')
+deadline = time.monotonic() + 1200
+while not pathlib.Path('/var/lib/claude-isolation-ready').is_file():
+    # Production setup retries transient outages automatically. Do not shut
+    # down its VM just because the first systemd start job had to retry.
+    if time.monotonic() >= deadline:
+        raise RuntimeError('Automatic desktop installation did not complete')
+    time.sleep(5)
 for package in ('claude-desktop', 'firefox'):
     installed = subprocess.check_output(['dpkg-query', '-W', '-f=${db:Status-Status}', package], text=True)
     if installed != 'installed':

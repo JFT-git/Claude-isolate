@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import sys
 import subprocess
@@ -193,7 +194,12 @@ def status(cfg, running=False):
             boot = source.read().decode('utf-8', errors='replace')
     except OSError:
         boot = ''
-    state['message'] = ('Рабочий стол готов' if 'CLAUDE-ISOLATION: desktop-ready' in boot
+    # The installation marker is emitted only on the first boot. Later boots
+    # already have the desktop and must not show installation indefinitely.
+    plain_boot = re.sub(r'\x1b\[[0-9;]*m', '', boot)
+    desktop_ready = ('CLAUDE-ISOLATION: desktop-ready' in plain_boot
+                     or 'Started lightdm.service - Light Display Manager.' in plain_boot)
+    state['message'] = ('Рабочий стол готов' if desktop_ready
                         else 'Linux запускается и устанавливает компоненты…')
     if 'CLAUDE-ISOLATION: FAILURE' in boot:
         state['message'] = 'Установка не завершена — проверьте журнал'

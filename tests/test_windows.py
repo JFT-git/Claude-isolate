@@ -15,6 +15,20 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_ready_status_after_reboot_without_first_install_marker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, cfg = backend.config(Path(temporary))
+            boot = Path(cfg['boot_log'])
+            cases = [
+                ('Starting lightdm.service - Light Display Manager.', False),
+                ('[ OK ] Started \x1b[0;1;39mlightdm.service\x1b[0m - Light Display Manager.', True),
+                ('CLAUDE-ISOLATION: desktop-ready', True),
+            ]
+            for log, ready in cases:
+                with self.subTest(log=log):
+                    boot.write_text(log, encoding='utf-8')
+                    self.assertEqual(backend.status(cfg, running=True)['message'] == 'Рабочий стол готов', ready)
+
     def test_failed_whpx_retries_once_with_same_exit_ip_and_remembers_tcg(self):
         with tempfile.TemporaryDirectory() as temporary:
             path, cfg = backend.config(Path(temporary))
