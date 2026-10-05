@@ -34,7 +34,7 @@ def smoke(folder, directory):
     env.pop('PYTHONUTF8', None)
     core = folder / 'Claude Isolate Core.exe'
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
-    if 'Claude Isolate 0.3.2' not in result.stdout:
+    if 'Claude Isolate 0.3.3' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
     report = directory / 'gui.json'
     data = directory / 'private data Тест'
@@ -78,7 +78,7 @@ def main():
     shutil.copy2(ROOT / 'windows/README.txt', folder / 'README.txt')
     licenses(folder)
     (folder / 'BUILD.json').write_text(json.dumps({
-        'version': '0.3.2', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
+        'version': '0.3.3', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
         'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
     }, indent=2), encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='Claude Isolate smoke ') as temporary:

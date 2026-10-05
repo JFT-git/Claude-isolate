@@ -17,7 +17,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.2'
+VERSION = '0.3.3'
 
 
 def emit(message, **fields):
@@ -178,7 +178,7 @@ def status(cfg, running=False):
     if 'CLAUDE-ISOLATION: FAILURE' in boot:
         state['message'] = 'Установка не завершена — проверьте журнал'
     try:
-        network = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
+        network = network_guard.read_state(cfg['network_status'])
         network['allowed'] = network_guard.permitted(cfg['network_status'])
         for suffix in ('.revoked', '.paused'):
             marker = Path(cfg['network_status']).with_suffix(suffix)

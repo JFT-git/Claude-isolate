@@ -188,7 +188,7 @@ def main():
                 previous = None
                 while process.poll() is None:
                     try:
-                        state = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
+                        state = network_guard.read_state(cfg['network_status'])
                         state['permission_current'] = network_guard.permitted(cfg['network_status'])
                         if state != previous:
                             with history.open('a', encoding='utf-8') as events:
@@ -207,7 +207,7 @@ def main():
         finally:
             # Preserve final state as well as the transitions collected above.
             try:
-                state = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
+                state = network_guard.read_state(cfg['network_status'])
                 state['permission_current'] = network_guard.permitted(cfg['network_status'])
                 (report / 'network-state.json').write_text(json.dumps(state), encoding='utf-8')
             except (OSError, ValueError, TypeError):

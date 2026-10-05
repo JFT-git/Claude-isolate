@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 import ssl
+import sys
+import tempfile
 import time
 import threading
 from network_transport import open_public, public_address
@@ -89,15 +91,61 @@ def probe(port=None, mode='proxy'):
         conn.close()
 
 
+def _state_stream(path):
+    """Windows readers must allow atomic replacement while their handle is open."""
+    if os.name != 'nt':
+        return Path(path).open('r', encoding='utf-8')
+    import ctypes
+    import msvcrt
+    api = ctypes.WinDLL('kernel32', use_last_error=True)
+    api.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                               ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+    api.CreateFileW.restype = ctypes.c_void_p
+    api.CloseHandle.argtypes = [ctypes.c_void_p]
+    api.CloseHandle.restype = ctypes.c_int
+    # GENERIC_READ, FILE_SHARE_READ|WRITE|DELETE, OPEN_EXISTING, NORMAL.
+    handle = api.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+    except BaseException:
+        api.CloseHandle(handle)
+        raise
+    return os.fdopen(fd, 'r', encoding='utf-8')
+
+
+def read_state(path):
+    with _state_stream(path) as stream:
+        value = stream.read(65537)
+    if len(value) > 65536:
+        raise ValueError('Oversized network status')
+    return json.loads(value)
+
+
 def publish(path, result):
     value = dict(result, expires=time.monotonic() + LEASE_SECONDS if result.get('allowed') else 0,
                  wall_expires=time.time() + LEASE_SECONDS if result.get('allowed') else 0)
     path = Path(path)
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value), encoding='utf-8')
-    if os.name != 'nt':
-        temporary.chmod(0o600)
-    temporary.replace(path)
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
+                                     prefix='.' + path.name + '-', suffix='.tmp', delete=False) as output:
+        temporary = Path(output.name)
+        json.dump(value, output)
+    try:
+        for attempt in range(20):
+            try:
+                temporary.replace(path)
+                break
+            except PermissionError as error:
+                # Other host software may temporarily deny delete sharing too.
+                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 19:
+                    raise
+                time.sleep(.01)
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass  # A host scanner can keep the abandoned temporary file open.
 
 
 def permitted(path, now=None):
@@ -109,7 +157,7 @@ def permitted(path, now=None):
     if external and Path(external).exists():
         return False
     try:
-        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        data = read_state(path)
         if not isinstance(data, dict) or not classify(data).get('allowed'):
             return False
         expiry = data['expires']
@@ -193,7 +241,7 @@ class NetworkEvents:
 
 def monitor(port, lease, stop, mode='proxy', initial=None, status_path=None, events=None):
     if initial is None:
-        initial = json.loads(Path(lease).read_text(encoding='utf-8'))
+        initial = read_state(lease)
     policy = SessionPolicy(initial)
     events = events or NetworkEvents(lease, status_path)
     while not stop.is_set():
@@ -214,19 +262,29 @@ def monitor(port, lease, stop, mode='proxy', initial=None, status_path=None, eve
             result = {'allowed': False, 'reason': 'Проверка IP недоступна. Сеть закрыта; повторяю проверку.'}
         if stop.is_set():
             return
-        if not result.get('allowed') and result.get('country') != 'RU':
-            # An outage/timeout is not evidence of a changed IP. Keep traffic
-            # closed and retry, rather than permanently locking every transient error.
-            for path in events.paths:
-                publish(path, result)
-            # Avoid a busy retry loop when route events continuously arrive.
-            if stop.wait(retry_after):
+        try:
+            if not result.get('allowed') and result.get('country') != 'RU':
+                # An outage/timeout is not evidence of a changed IP.
+                for path in events.paths:
+                    publish(path, result)
+                if stop.wait(retry_after):
+                    return
+                continue
+            result = policy.evaluate(result)
+            if result.get('locked'):
+                revoke(lease, status_path, result['reason'])
+                for path in events.paths:
+                    publish(path, result)
                 return
-            continue
-        result = policy.evaluate(result)
-        if result.get('locked'):
-            revoke(lease, status_path, result['reason'])
-            for path in events.paths:
-                publish(path, result)
-            return
-        events.verified(generation, result)
+            events.verified(generation, result)
+        except OSError as error:
+            # Never lose the monitor permanently on a Windows file-sharing
+            # race. Pause independently of JSON replacement, then verify again.
+            reason = 'Не удалось обновить сетевой статус. Сеть закрыта; повторяю проверку.'
+            print(f'Network status update failed: {error}', file=sys.stderr, flush=True)
+            try:
+                events.pause(reason)
+            except OSError:
+                pass  # If the filesystem is unavailable, the short lease expires.
+            if stop.wait(CHECK_INTERVAL):
+                return
