@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Disposable Windows QEMU boot check of the packaged gateway, without accounts."""
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -126,6 +127,29 @@ public_pair()
 bulk_https()
 '''.replace('@BULK_PATH@', gnupg.URL.split('gnupg.org', 1)[1]).replace('@BULK_HASH@', gnupg.SHA256)
 
+DESKTOP_PROBE = '''import pathlib, subprocess, time
+if not pathlib.Path('/var/lib/claude-isolation-ready').is_file():
+    raise RuntimeError('Automatic desktop installation did not complete')
+for package in ('claude-desktop', 'firefox'):
+    installed = subprocess.check_output(['dpkg-query', '-W', '-f=${db:Status-Status}', package], text=True)
+    if installed != 'installed':
+        raise RuntimeError('Missing automatically installed package: ' + package)
+    subprocess.run(['dpkg-query', '-W', '-f=WINDOWS-INTEGRATION: INSTALLED ${Package} ${Version}\\n', package], check=True)
+deadline = time.monotonic() + 90
+while True:
+    desktop = subprocess.run(['runuser', '-u', 'claude', '--', 'env', 'DISPLAY=:0',
+                             'XAUTHORITY=/home/claude/.Xauthority', 'xrandr', '--current'],
+                            capture_output=True, text=True)
+    if desktop.returncode == 0 and ' connected' in desktop.stdout:
+        print(desktop.stdout, flush=True)
+        break
+    if time.monotonic() >= deadline:
+        raise RuntimeError('Installed graphical desktop did not start: ' + desktop.stderr)
+    time.sleep(2)
+subprocess.run(['systemctl', 'is-active', '--quiet', 'lightdm'], check=True)
+print('WINDOWS-INTEGRATION: DESKTOP-READY', flush=True)
+'''
+
 
 def qemu(directory):
     executable = backend.find_tool('qemu-system-x86_64')
@@ -149,6 +173,9 @@ def qemu(directory):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--desktop', action='store_true', help='Verify complete automatic desktop installation')
+    args = parser.parse_args()
     if os.name != 'nt':
         raise SystemExit('Run this integration test on Windows.')
     report = ROOT / 'reports/windows'
@@ -163,7 +190,8 @@ def main():
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
-        cfg.update(qemu_executable=str(executable), accelerator='tcg', display='sdl', memory_mb=2048)
+        cfg.update(qemu_executable=str(executable), accelerator='tcg', display='sdl',
+                   memory_mb=3072 if args.desktop else 2048)
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
         # Use the actual packaged first-run setup, including GPG, qemu-img,
@@ -177,14 +205,22 @@ def main():
             print((report / 'prepare.log').read_text(encoding='utf-8', errors='replace')[-12000:])
             raise RuntimeError('Packaged first-run setup failed')
         cfg = environment.load_config(path)
-        cloud = '#cloud-config\n' + json.dumps({
+        cloud_data = {
             'hostname': 'windows-isolation-test', 'ssh_pwauth': False,
             'bootcmd': [boot_command(ROOT)],
             'write_files': [{'path': '/ci-probe.py', 'content': PROBE, 'permissions': '0600'}],
             'runcmd': [['python3', '/ci-probe.py'], ['systemctl', 'poweroff']],
-        })
-        # This guest is disposable and has never booted. Replace only its seed
-        # with the account-free probe instead of installing the full desktop.
+        }
+        if args.desktop:
+            # Keep the production first-run setup; only add account-free
+            # assertions and shutdown AFTER it finishes automatically.
+            cloud_data = json.loads(environment.cloud_config(cfg).split('\n', 1)[1])
+            cloud_data['write_files'].append({'path': '/ci-probe.py',
+                                             'content': DESKTOP_PROBE + PROBE, 'permissions': '0600'})
+            cloud_data['runcmd'] += [['python3', '/ci-probe.py'], ['systemctl', 'poweroff']]
+        cloud = '#cloud-config\n' + json.dumps(cloud_data)
+        # This guest is disposable and has never booted. No account data is
+        # copied. The desktop mode uses the production bootstrap unchanged.
         seed_directory = directory / 'probe-seed'
         seed_directory.mkdir()
         (seed_directory / 'user-data').write_text(cloud, encoding='utf-8', newline='\n')
@@ -234,7 +270,8 @@ def main():
                     if not control.get('running'):
                         raise RuntimeError('Windows control owner lost the running VM')
                 (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
-                deadline = time.monotonic() + 420
+                boot_timeout = 1500 if args.desktop else 420
+                deadline = time.monotonic() + boot_timeout
                 history = report / 'network-events.jsonl'
                 history.write_text('', encoding='utf-8')
                 previous = None
@@ -249,7 +286,7 @@ def main():
                     except (OSError, ValueError, TypeError):
                         pass
                     if time.monotonic() >= deadline:
-                        raise subprocess.TimeoutExpired(process.args, 420)
+                        raise subprocess.TimeoutExpired(process.args, boot_timeout)
                     try:
                         process.wait(timeout=.5)
                     except subprocess.TimeoutExpired:
@@ -281,7 +318,10 @@ def main():
                 raise RuntimeError('Guest network check failed: ' + marker)
         if boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK') != 2:
             raise RuntimeError('Both concurrent public HTTPS connections must succeed')
+        if args.desktop and 'WINDOWS-INTEGRATION: DESKTOP-READY' not in boot:
+            raise RuntimeError('Full automatic desktop and applications were not verified')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
+                  'sdl_guest_window': True, 'automatic_desktop_verified': args.desktop,
                   'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
                   'bulk_https_checksum_verified': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
