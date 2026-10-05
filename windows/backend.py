@@ -79,7 +79,7 @@ def dependencies(data, cfg):
     if cfg.get('qemu_executable') and Path(cfg['qemu_executable']).is_file():
         os.environ['PATH'] = str(Path(cfg['qemu_executable']).parent) + os.pathsep + os.environ.get('PATH', '')
     packages = [('qemu-system-x86_64', 'SoftwareFreedomConservancy.QEMU'),
-                ('gpg', 'GnuPG.Gpg4win')]
+                ('gpg', 'GnuPG.GnuPG')]
     for name, package in packages:
         if find_tool(name):
             continue
@@ -87,7 +87,7 @@ def dependencies(data, cfg):
         if not winget:
             raise RuntimeError('Для автоматической установки нужен «Установщик приложений» '
                                'Microsoft (App Installer). Обновите его через Microsoft Store '
-                               'или установите QEMU и Gpg4win вручную и повторите запуск.')
+                               'или установите QEMU и GnuPG вручную и повторите запуск.')
         emit('Установка ' + ('QEMU' if name.startswith('qemu') else 'GnuPG') +
              ' — подтвердите системный запрос Windows, если он появится.')
         subprocess.run([winget, 'install', '--exact', '--id', package, '--source', 'winget',

@@ -9,7 +9,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -22,8 +21,8 @@ from windows.job import Job
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
                'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
-GPG_URL = 'https://files.gpg4win.org/gpg4win-5.1.1.exe'
-GPG_SHA256 = 'ed19c0c89ec42fe32c52a7abd6e3da5f491752700546b9eed7ddf82fd303cddf'
+GPG_URL = 'https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.24_20260923.exe'
+GPG_SHA256 = 'ea6f9dee2cccd83287432625b8b399173805add81d27067fcaf019c0c4da1ad8'
 PROBE = '''import concurrent.futures, socket, ssl
 
 def blocked_direct():
@@ -110,7 +109,10 @@ def main():
             with installer.open('rb') as source:
                 if hashlib.file_digest(source, 'sha256').hexdigest() != GPG_SHA256:
                     raise RuntimeError('Pinned native GnuPG installer checksum mismatch')
-            subprocess.run([str(installer), '/S'], check=True, timeout=180)
+            destination = directory / 'GnuPG'
+            subprocess.run([str(installer), '/S', '/D=' + str(destination)],
+                           check=True, timeout=180)
+            os.environ['PATH'] = str(destination / 'bin') + os.pathsep + os.environ['PATH']
             installer.unlink()
             gpg = backend.find_tool('gpg')
             if not gpg:
@@ -120,20 +122,34 @@ def main():
         path, cfg = backend.config(directory / 'data')
         cfg.update(qemu_executable=str(executable), accelerator='tcg', display='none', memory_mb=2048)
         backend.write_config(path, cfg)
-        image, digest = ubuntu_image.download(directory / 'downloads', 'x86_64', str(gpg))
+        core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
+        # Use the actual packaged first-run setup, including GPG, qemu-img,
+        # image download/signature checks and the bundled ISO writer.
+        with (report / 'prepare.log').open('wb') as output:
+            subprocess.run([str(core), 'prepare', '--data', str(path.parent)],
+                           stdout=output, stderr=subprocess.STDOUT, check=True,
+                           creationflags=subprocess.CREATE_NO_WINDOW, timeout=600)
+        cfg = environment.load_config(path)
         cloud = '#cloud-config\n' + json.dumps({
             'hostname': 'windows-isolation-test', 'ssh_pwauth': False,
             'write_files': [{'path': '/ci-probe.py', 'content': PROBE, 'permissions': '0600'}],
             'runcmd': [['python3', '/ci-probe.py'], ['systemctl', 'poweroff']],
         })
-        with patch.object(environment, 'cloud_config', return_value=cloud):
-            environment.prepare(cfg, image, digest)
+        # This guest is disposable and has never booted. Replace only its seed
+        # with the account-free probe instead of installing the full desktop.
+        seed_directory = directory / 'probe-seed'
+        seed_directory.mkdir()
+        (seed_directory / 'user-data').write_text(cloud, encoding='utf-8', newline='\n')
+        (seed_directory / 'meta-data').write_text('instance-id: windows-gateway-ci\n', encoding='utf-8', newline='\n')
+        prepared_seed = directory / 'probe.iso'
+        backend.seed_iso(seed_directory, prepared_seed)
+        os.replace(prepared_seed, cfg['seed'])
         job = Job()
         process = None
         try:
             with (report / 'core.log').open('wb') as output:
                 process = subprocess.Popen([
-                    str(ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'),
+                    str(core),
                     'cli', 'start', '--config', str(path), '--start-gate'],
                     stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW)

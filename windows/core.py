@@ -9,6 +9,13 @@ from windows import backend
 
 
 if __name__ == '__main__':
+    if sys.platform == 'win32' and getattr(sys, 'frozen', False):
+        # Do not make system QEMU/GnuPG load the Python bundle's DLL versions.
+        import ctypes
+        library = ctypes.WinDLL('kernel32', use_last_error=True)
+        library.SetDllDirectoryW.argtypes = [ctypes.c_wchar_p]
+        if not library.SetDllDirectoryW(None):
+            raise ctypes.WinError(ctypes.get_last_error())
     for stream in (sys.stdout, sys.stderr):
         if stream is not None:
             stream.reconfigure(encoding='utf-8')
