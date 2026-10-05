@@ -326,7 +326,7 @@ def main():
                             '[Service]\nType=oneshot\nTimeoutStartSec=300\n'
                             'StandardOutput=journal+console\nStandardError=journal+console\n'
                             'ExecStart=/usr/bin/python3 /ci-probe.py\n'
-                            'ExecStartPost=/usr/bin/systemctl --no-block poweroff\n'
+                            'ExecStopPost=/usr/bin/systemctl --no-block poweroff\n'
                             '[Install]\nWantedBy=multi-user.target\n'), 'permissions': '0644'})
             cloud_data['runcmd'] += [['systemctl', 'daemon-reload'],
                                     ['systemctl', 'enable', 'ci-reboot-probe.service'],
