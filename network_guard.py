@@ -1,5 +1,6 @@
 """Fail-closed egress geolocation lease. Does not prove per-domain routing."""
 import http.client
+from functools import lru_cache
 import ipaddress
 import json
 import os
@@ -91,18 +92,28 @@ def probe(port=None, mode='proxy'):
         conn.close()
 
 
-def _state_stream(path):
-    """Windows readers must allow atomic replacement while their handle is open."""
-    if os.name != 'nt':
-        return Path(path).open('r', encoding='utf-8')
+@lru_cache(maxsize=1)
+def _windows_file_api():
     import ctypes
-    import msvcrt
     api = ctypes.WinDLL('kernel32', use_last_error=True)
     api.CreateFileW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
                                ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
     api.CreateFileW.restype = ctypes.c_void_p
     api.CloseHandle.argtypes = [ctypes.c_void_p]
     api.CloseHandle.restype = ctypes.c_int
+    api.SetFileInformationByHandle.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                               ctypes.c_void_p, ctypes.c_uint32]
+    api.SetFileInformationByHandle.restype = ctypes.c_int
+    return api
+
+
+def _state_stream(path):
+    """Windows readers must allow atomic replacement while their handle is open."""
+    if os.name != 'nt':
+        return Path(path).open('r', encoding='utf-8')
+    import ctypes
+    import msvcrt
+    api = _windows_file_api()
     # GENERIC_READ, FILE_SHARE_READ|WRITE|DELETE, OPEN_EXISTING, NORMAL.
     handle = api.CreateFileW(str(path), 0x80000000, 7, None, 3, 0x80, None)
     if handle == ctypes.c_void_p(-1).value:
@@ -113,6 +124,33 @@ def _state_stream(path):
         api.CloseHandle(handle)
         raise
     return os.fdopen(fd, 'r', encoding='utf-8')
+
+
+def _replace_state(temporary, path):
+    if os.name != 'nt':
+        temporary.replace(path)
+        return
+    import ctypes
+    api = _windows_file_api()
+    encoded = str(path.absolute()).encode('utf-16-le')
+    class RenameInfo(ctypes.Structure):
+        _fields_ = [('Flags', ctypes.c_uint32), ('RootDirectory', ctypes.c_void_p),
+                    ('FileNameLength', ctypes.c_uint32), ('FileName', ctypes.c_ubyte * (len(encoded) + 2))]
+    info = RenameInfo()
+    # FileRenameInfoEx=22, REPLACE_IF_EXISTS|POSIX_SEMANTICS. MoveFileExW
+    # (os.replace) cannot replace a held target even with FILE_SHARE_DELETE.
+    # https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
+    info.Flags = 3
+    info.FileNameLength = len(encoded)
+    ctypes.memmove(ctypes.addressof(info) + RenameInfo.FileName.offset, encoded, len(encoded))
+    handle = api.CreateFileW(str(temporary), 0x10000, 7, None, 3, 0x80, None)  # DELETE access.
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        if not api.SetFileInformationByHandle(handle, 22, ctypes.byref(info), ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        api.CloseHandle(handle)
 
 
 def read_state(path):
@@ -134,7 +172,7 @@ def publish(path, result):
     try:
         for attempt in range(20):
             try:
-                temporary.replace(path)
+                _replace_state(temporary, path)
                 break
             except PermissionError as error:
                 # Other host software may temporarily deny delete sharing too.

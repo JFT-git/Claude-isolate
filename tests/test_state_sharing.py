@@ -19,7 +19,9 @@ def approved():
 class StateSharingTests(unittest.TestCase):
     def test_held_reader_does_not_block_replace_and_new_reads_see_denial(self):
         with tempfile.TemporaryDirectory() as directory:
-            lease = Path(directory) / 'lease.json'
+            data = Path(directory) / 'Тест😀'
+            data.mkdir()
+            lease = data / 'lease.json'
             guard.publish(lease, approved())
             with guard._state_stream(lease) as held:
                 guard.publish(lease, {'allowed': False, 'reason': 'closed'})
