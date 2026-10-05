@@ -53,6 +53,7 @@ def proxy(host):
 def public_https(index):
     stream, reply = proxy('www.cloudflare.com')
     if not reply.startswith(b'HTTP/1.1 200'):
+        stream.close()
         raise RuntimeError('Gateway refused public HTTPS: ' + str(reply))
     with ssl.create_default_context().wrap_socket(stream, server_hostname='www.cloudflare.com') as tls:
         tls.sendall(b'GET /cdn-cgi/trace HTTP/1.1\\r\\nHost: www.cloudflare.com\\r\\nConnection: close\\r\\n\\r\\n')
@@ -64,7 +65,23 @@ def public_https(index):
             result.extend(block)
     if b'ip=' not in result or b'loc=' not in result:
         raise RuntimeError('Missing public HTTPS response')
-    print('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK', index, flush=True)
+    return index
+
+def public_pair():
+    # A temporary probe outage intentionally closes active connections. Retry
+    # the WHOLE concurrent pair, never count a partial/failed attempt as success.
+    for attempt in range(3):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(public_https, range(2)))
+            for index in results:
+                print('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK', index, flush=True)
+            return
+        except (OSError, RuntimeError) as error:
+            print('WINDOWS-INTEGRATION: HTTPS-ATTEMPT-FAILED', attempt + 1, str(error), flush=True)
+            if attempt == 2:
+                raise
+            time.sleep(5)
 
 blocked_direct()
 stream, reply = proxy('127.0.0.1')
@@ -72,8 +89,7 @@ stream.close()
 if not reply.startswith(b'HTTP/1.1 403'):
     raise RuntimeError('Gateway allowed a local destination')
 print('WINDOWS-INTEGRATION: LOCAL-BLOCKED', flush=True)
-with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-    list(pool.map(public_https, range(2)))
+public_pair()
 '''
 
 
@@ -166,9 +182,36 @@ def main():
                         if process.poll() is not None or time.monotonic() >= deadline:
                             raise RuntimeError('Packaged launcher did not expose the Windows control pipe')
                         time.sleep(.5)
-                if process.wait(timeout=420):
+                deadline = time.monotonic() + 420
+                history = report / 'network-events.jsonl'
+                history.write_text('', encoding='utf-8')
+                previous = None
+                while process.poll() is None:
+                    try:
+                        state = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
+                        state['permission_current'] = network_guard.permitted(cfg['network_status'])
+                        if state != previous:
+                            with history.open('a', encoding='utf-8') as events:
+                                events.write(json.dumps(state) + '\n')
+                            previous = state
+                    except (OSError, ValueError, TypeError):
+                        pass
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(process.args, 420)
+                    try:
+                        process.wait(timeout=.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if process.returncode:
                     raise RuntimeError('Packaged launcher failed during guest boot')
         finally:
+            # Preserve final state as well as the transitions collected above.
+            try:
+                state = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
+                state['permission_current'] = network_guard.permitted(cfg['network_status'])
+                (report / 'network-state.json').write_text(json.dumps(state), encoding='utf-8')
+            except (OSError, ValueError, TypeError):
+                pass
             network_guard.revoke(None, cfg['network_status'])
             job.close()
             if process and process.poll() is None:
@@ -184,6 +227,8 @@ def main():
                         print('\n'.join(lines[max(0, index - 2):index + 12]))
                 print((report / 'core.log').read_text(encoding='utf-8', errors='replace')[-12000:])
                 raise RuntimeError('Guest network check failed: ' + marker)
+        if boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK') != 2:
+            raise RuntimeError('Both concurrent public HTTPS connections must succeed')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
                   'public_https_connections': boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK'),

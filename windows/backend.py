@@ -17,7 +17,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.1'
+VERSION = '0.3.2'
 
 
 def emit(message, **fields):
