@@ -80,7 +80,7 @@ class WindowsBackendTests(unittest.TestCase):
             expected = {'user-data': '#cloud-config\n# Русская раскладка\n',
                         'meta-data': 'instance-id: windows-test\n'}
             for name, content in expected.items():
-                (directory / name).write_text(content, encoding='utf-8')
+                (directory / name).write_text(content, encoding='utf-8', newline='\n')
             image = Path(temporary) / 'seed.iso'
             backend.seed_iso(directory, image)
             iso = pycdlib.PyCdlib()

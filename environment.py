@@ -386,8 +386,9 @@ def prepare(cfg, base, digest):
         staged_seed = Path(seed_staging) / 'seed.iso'
         seed_dir = Path(seed_staging) / 'files'
         seed_dir.mkdir()
-        (seed_dir / 'user-data').write_text(cloud_config(), encoding='utf-8')
-        (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n')
+        (seed_dir / 'user-data').write_text(cloud_config(), encoding='utf-8', newline='\n')
+        (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n',
+                                          encoding='utf-8', newline='\n')
         image_tool = tool('qemu-img')
         subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(staged_disk)], check=True)
         subprocess.run([image_tool, 'resize', str(staged_disk), '64G'], check=True)
