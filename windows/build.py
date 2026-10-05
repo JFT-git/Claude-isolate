@@ -31,12 +31,13 @@ def smoke(folder, directory):
     env = dict(os.environ, PATH=str(Path(os.environ['SystemRoot']) / 'System32'))
     env.pop('PYTHONHOME', None)
     env.pop('PYTHONPATH', None)
+    env.pop('PYTHONUTF8', None)
     core = folder / 'Claude Isolate Core.exe'
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
     if 'Claude Isolate 0.3.0' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
     report = directory / 'gui.json'
-    data = directory / 'private data'
+    data = directory / 'private data Тест'
     run([str(folder / 'Claude Isolate.exe'), '--data', str(data), '--smoke-test', str(report)], env=env, timeout=60)
     if json.loads(report.read_text(encoding='utf-8')).get('gui') is not True:
         raise RuntimeError('GUI could not initialize on a clean Windows process')
@@ -87,7 +88,7 @@ def main():
     installer = DIST / 'Claude-isolate-windows-x64-setup.exe'
     with tempfile.TemporaryDirectory(prefix='Claude Isolate installer ') as temporary:
         directory = Path(temporary)
-        installed = directory / 'Clean installation'
+        installed = directory / 'Clean installation Тест'
         run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
              '/DIR=' + str(installed), '/TASKS='], timeout=120)
         data = smoke(installed, directory)

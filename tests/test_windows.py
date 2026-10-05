@@ -15,6 +15,19 @@ from windows import backend
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_cyrillic_paths_and_stop_marker_work_without_utf8_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'Тест'
+            path, cfg = backend.config(directory)
+            child = ('import sys,environment,network_guard; '
+                     'cfg=environment.load_config(sys.argv[1]); '
+                     'network_guard.revoke(None,cfg["network_status"],"Остановка среды")')
+            subprocess.run([sys.executable, '-c', child, str(path)],
+                           env=dict(os.environ, PYTHONUTF8='0'), check=True,
+                           cwd=environment.ROOT, capture_output=True, timeout=10)
+            marker = Path(cfg['network_status']).with_suffix('.revoked')
+            self.assertEqual(marker.read_text(encoding='utf-8'), 'Остановка среды')
+
     def test_data_and_control_are_local_and_existing_settings_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -59,6 +72,11 @@ class WindowsBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'App Installer'):
                 backend.dependencies(Path(temporary), {})
             execute.assert_not_called()
+
+    def test_git_msys_gpg_is_not_selected_as_native_gnupg(self):
+        with patch.object(backend.shutil, 'which', return_value=r'C:\Program Files\Git\usr\bin\gpg.exe'), \
+             patch.object(Path, 'is_file', return_value=False):
+            self.assertIsNone(backend.find_tool('gpg'))
 
     def test_existing_tools_do_not_trigger_reinstallation(self):
         with tempfile.TemporaryDirectory() as temporary, \

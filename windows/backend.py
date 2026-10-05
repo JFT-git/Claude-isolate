@@ -61,12 +61,16 @@ def seed_iso(directory, destination):
 
 def find_tool(name):
     found = shutil.which(name)
+    if name == 'gpg' and found and 'git/usr/bin/' in str(found).replace('\\', '/').lower():
+        # Git's MSYS build is not the native GnuPG package installed by winget.
+        found = None
     if found:
         return Path(found)
     folders = [Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'qemu',
                Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'GnuPG/bin',
                Path(os.environ.get('ProgramFiles(x86)', 'C:/Program Files (x86)')) / 'GnuPG/bin',
-               Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Git/usr/bin']
+               Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'Gpg4win/bin',
+               Path(os.environ.get('ProgramFiles(x86)', 'C:/Program Files (x86)')) / 'Gpg4win/bin']
     return next((folder / (name + '.exe') for folder in folders
                  if (folder / (name + '.exe')).is_file()), None)
 
@@ -167,12 +171,12 @@ def status(cfg, running=False):
     if 'CLAUDE-ISOLATION: FAILURE' in boot:
         state['message'] = 'Установка не завершена — проверьте журнал'
     try:
-        network = json.loads(Path(cfg['network_status']).read_text())
+        network = json.loads(Path(cfg['network_status']).read_text(encoding='utf-8'))
         network['allowed'] = network_guard.permitted(cfg['network_status'])
         for suffix in ('.revoked', '.paused'):
             marker = Path(cfg['network_status']).with_suffix(suffix)
             if marker.exists():
-                network.update(allowed=False, reason=marker.read_text())
+                network.update(allowed=False, reason=marker.read_text(encoding='utf-8'))
                 break
         state['network'] = network
     except (OSError, ValueError, TypeError):

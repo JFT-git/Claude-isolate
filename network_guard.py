@@ -94,7 +94,7 @@ def publish(path, result):
                  wall_expires=time.time() + LEASE_SECONDS if result.get('allowed') else 0)
     path = Path(path)
     temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value))
+    temporary.write_text(json.dumps(value), encoding='utf-8')
     if os.name != 'nt':
         temporary.chmod(0o600)
     temporary.replace(path)
@@ -109,7 +109,7 @@ def permitted(path, now=None):
     if external and Path(external).exists():
         return False
     try:
-        data = json.loads(Path(path).read_text())
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
         if not isinstance(data, dict) or not classify(data).get('allowed'):
             return False
         expiry = data['expires']
@@ -131,7 +131,7 @@ def revoke(lease, status_path=None, reason='Сеть закрыта до пер�
             except FileExistsError:
                 continue
             if fd is not None:
-                with os.fdopen(fd, 'w') as output:
+                with os.fdopen(fd, 'w', encoding='utf-8') as output:
                     output.write(reason)
 
 
@@ -172,7 +172,7 @@ class NetworkEvents:
         with self.lock:
             self.generation += 1
             for path in self.paths:
-                path.with_suffix('.paused').write_text(reason)
+                path.with_suffix('.paused').write_text(reason, encoding='utf-8')
             self.wake.set()
 
     def snapshot(self):
@@ -193,7 +193,7 @@ class NetworkEvents:
 
 def monitor(port, lease, stop, mode='proxy', initial=None, status_path=None, events=None):
     if initial is None:
-        initial = json.loads(Path(lease).read_text())
+        initial = json.loads(Path(lease).read_text(encoding='utf-8'))
     policy = SessionPolicy(initial)
     events = events or NetworkEvents(lease, status_path)
     while not stop.is_set():

@@ -22,6 +22,8 @@ from windows.job import Job
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
                'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
+GPG_URL = 'https://files.gpg4win.org/gpg4win-5.1.1.exe'
+GPG_SHA256 = 'ed19c0c89ec42fe32c52a7abd6e3da5f491752700546b9eed7ddf82fd303cddf'
 PROBE = '''import concurrent.futures, socket, ssl
 
 def blocked_direct():
@@ -103,7 +105,16 @@ def main():
         executable = qemu(directory)
         gpg = backend.find_tool('gpg')
         if not gpg:
-            raise RuntimeError('The runner must provide GnuPG (Git for Windows includes it).')
+            installer = directory / 'gpg-setup.exe'
+            ubuntu_image.fetch(GPG_URL, installer)
+            with installer.open('rb') as source:
+                if hashlib.file_digest(source, 'sha256').hexdigest() != GPG_SHA256:
+                    raise RuntimeError('Pinned native GnuPG installer checksum mismatch')
+            subprocess.run([str(installer), '/S'], check=True, timeout=180)
+            installer.unlink()
+            gpg = backend.find_tool('gpg')
+            if not gpg:
+                raise RuntimeError('Native GnuPG installation failed')
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')

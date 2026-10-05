@@ -37,9 +37,15 @@ def download(directory, arch, gpg):
     home = directory / 'verification'
     home.mkdir(mode=0o700, exist_ok=True)
     common = [gpg, '--homedir', str(home), '--batch', '--no-autostart']
-    subprocess.run(common + ['--import', str(key)], check=True, capture_output=True)
-    verified = subprocess.run(common + ['--status-fd', '1', '--verify', str(signature), str(sums)],
-                              check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(common + ['--import', str(key)], check=True, capture_output=True)
+        verified = subprocess.run(common + ['--status-fd', '1', '--verify', str(signature), str(sums)],
+                                  check=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr or ''
+        if isinstance(detail, bytes):
+            detail = detail.decode('utf-8', errors='replace')
+        raise RuntimeError('Ubuntu signature verification failed: ' + detail.strip()[:2000]) from error
     if not any(line.startswith('[GNUPG:] VALIDSIG ' + FINGERPRINT + ' ') for line in verified.stdout.splitlines()):
         raise RuntimeError('Ubuntu signing key mismatch')
     entries = [parts[0] for line in sums.read_text().splitlines()

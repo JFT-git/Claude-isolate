@@ -55,7 +55,7 @@ separate publisher identity. No signing certificate is committed or required.
 The Windows app/installer has no Authenticode certificate. Its first-run QEMU
 and GnuPG installation uses Microsoft's winget source and installer hash checks;
 these host dependencies are not bundled in the application. The CI-only QEMU
-installer has a fixed vendor URL and pinned SHA512 before it is executed.
+and GnuPG installers have fixed vendor URLs and pinned SHA512/SHA256 before execution.
 
 For a suspected vulnerability, use GitHub's private vulnerability reporting if
 enabled on this repository. Do not put credentials or exploit details against live

@@ -1,5 +1,7 @@
 """Native Windows launcher UI with no external Python requirement."""
 import argparse
+import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -30,6 +32,7 @@ class Application:
         self.vm_started = False
         self.restarting = False
         self.closing = False
+        self.stopping = False
         self.auxiliary = None
         self.last_error = None
         self.messages = queue.Queue()
@@ -126,18 +129,28 @@ class Application:
             self.message.set(str(error))
 
     def stop(self, restart=False):
-        if not self.vm_started or self.auxiliary:
+        if not self.vm_started or self.stopping:
             return
         self.restarting = restart
+        self.stopping = True
         self.message.set('Закрываю сеть и корректно завершаю Linux…')
-        self.auxiliary = subprocess.Popen(worker_command('stop', self.data),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
-            errors='replace', creationflags=subprocess.CREATE_NO_WINDOW)
+        try:
+            self.auxiliary = subprocess.Popen(worker_command('stop', self.data),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                errors='replace', creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError as error:
+            self.message.set(str(error))
+            self.stopping = self.restarting = self.closing = False
+            return
         def finish():
             process = self.auxiliary
             try:
                 output, _ = process.communicate(timeout=10)
                 if process.returncode:
+                    try:
+                        output = json.loads(output.splitlines()[-1])['message']
+                    except (ValueError, KeyError, IndexError):
+                        pass
                     self.messages.put({'error': True, 'stop_error': True,
                                        'message': output.strip() or 'Linux пока не отвечает на остановку. Повторите позже.'})
             except subprocess.TimeoutExpired:
@@ -165,7 +178,7 @@ class Application:
             if value.get('stop_finished'):
                 self.auxiliary = None
             if value.get('stop_error'):
-                self.restarting = self.closing = False
+                self.restarting = self.closing = self.stopping = False
             if value.get('running'):
                 self.vm_started = True
             if value.get('message'):
@@ -179,6 +192,7 @@ class Application:
             returncode = self.task.returncode
             self.task = None
             self.vm_started = False
+            self.stopping = False
             self.job.close()
             self.job = None
             self.progress.stop()
@@ -193,12 +207,12 @@ class Application:
         if self.vm_started:
             _, cfg = backend.config(self.data)
             state = backend.status(cfg, True)
-            if not self.auxiliary and not self.closing and not self.restarting:
+            if not self.stopping and not self.closing and not self.restarting:
                 self.message.set(state['message'])
             network = state['network']
             self.network.set(('Сеть открыта' if network.get('allowed') else 'Сеть закрыта') +
                              ': ' + str(network.get('reason', '')))
-        running = self.vm_started and not self.closing and not self.restarting
+        running = self.vm_started and not self.closing and not self.restarting and not self.stopping
         self.start_button.configure(state='disabled' if self.task or self.closing else 'normal')
         for button in (self.stop_button, self.restart_button):
             button.configure(state='normal' if running and not self.auxiliary else 'disabled')
@@ -211,11 +225,31 @@ def main():
     parser.add_argument('--data', type=Path, default=Path(os.environ.get('LOCALAPPDATA', '.')) / 'Claude Isolate')
     parser.add_argument('--smoke-test', type=Path)
     args = parser.parse_args()
+    mutex = None
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
     try:
         # Let Tk use Windows' display scaling instead of bitmap stretching.
-        import ctypes
         ctypes.WinDLL('user32').SetProcessDPIAware()
         root = tk.Tk()
+        name = 'Local\\Claude-Isolate-' + hashlib.sha256(os.path.normcase(str(args.data.resolve())).encode()).hexdigest()
+        mutex = kernel.CreateMutexW(None, 0, name)
+        if not mutex:
+            raise ctypes.WinError(ctypes.get_last_error())
+        if ctypes.get_last_error() == 183:
+            user = ctypes.WinDLL('user32')
+            user.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+            user.FindWindowW.restype = ctypes.c_void_p
+            user.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            user.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+            existing = user.FindWindowW(None, 'Claude Isolate')
+            if existing:
+                user.ShowWindow(existing, 9)
+                user.SetForegroundWindow(existing)
+            root.destroy()
+            return
         app = Application(root, args.data.resolve())
         if args.smoke_test:
             root.update_idletasks()
@@ -230,6 +264,9 @@ def main():
             raise SystemExit(1)
         messagebox.showerror('Claude Isolate', str(error))
         raise SystemExit(1)
+    finally:
+        if mutex:
+            kernel.CloseHandle(mutex)
 
 
 if __name__ == '__main__':

@@ -107,7 +107,7 @@ def http_headers(header, authority):
 
 
 def load_config(path):
-    cfg = json.loads(Path(path).read_text())
+    cfg = json.loads(Path(path).read_text(encoding='utf-8'))
     if cfg['arch'] not in ('aarch64', 'x86_64'):
         raise ValueError('arch must be aarch64 or x86_64')
     mode = cfg.setdefault('network_mode', 'system')
