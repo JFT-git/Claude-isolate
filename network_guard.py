@@ -164,6 +164,11 @@ def read_state(path):
 def publish(path, result):
     value = dict(result, expires=time.monotonic() + LEASE_SECONDS if result.get('allowed') else 0,
                  wall_expires=time.time() + LEASE_SECONDS if result.get('allowed') else 0)
+    write_state(path, value)
+
+
+def write_state(path, value):
+    """Atomically publish JSON, including while Windows readers hold it open."""
     path = Path(path)
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                      prefix='.' + path.name + '-', suffix='.tmp', delete=False) as output:

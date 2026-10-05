@@ -18,7 +18,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.5'
+VERSION = '0.3.6'
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
 
@@ -176,27 +176,8 @@ def prepare(data, cfg):
 
 
 def qmp(cfg, execute):
-    # QEMU uses a duplex named pipe on Windows. No listening TCP control port.
-    with open('\\\\.\\pipe\\' + cfg['qmp_pipe'], 'r+b', buffering=0) as pipe:
-        greeting = json.loads(pipe.readline(65537))
-        if 'QMP' not in greeting:
-            raise RuntimeError('Неверный ответ канала управления QEMU')
-        for request in ('qmp_capabilities', execute):
-            pipe.write(json.dumps({'execute': request, 'id': request}).encode() + b'\n')
-            for _ in range(100):
-                line = pipe.readline(65537)
-                if not line or len(line) > 65536:
-                    raise RuntimeError('Канал управления QEMU прерван')
-                reply = json.loads(line)
-                if reply.get('id') != request:
-                    continue
-                if 'error' in reply:
-                    raise RuntimeError(str(reply['error']))
-                if 'return' in reply:
-                    break
-            else:
-                raise RuntimeError('Нет ответа QEMU на команду управления')
-        return reply['return']
+    from windows.control import request
+    return request(cfg, execute)
 
 
 def status(cfg, running=False):

@@ -485,6 +485,7 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                     watcher = None
                     routes = None
                     bridge = None
+                    control = None
                     def interrupted(signum, frame):
                         raise KeyboardInterrupt('Launcher interrupted')
                     previous_term = signal.signal(signal.SIGTERM, interrupted)
@@ -515,12 +516,17 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                             env['CLAUDE_NETWORK_REVOKE'] = str(Path(status_path).with_suffix('.revoked'))
                         env.pop('IPINFO_TOKEN', None)
                         proc = subprocess.Popen(cmd, env=env)
-                        if platform.system() == 'Windows':
-                            from windows.serial_gateway import Gateway
-                            bridge = Gateway(cfg, env)
-                            bridge.start()
-                        print(json.dumps({'message': 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
                         try:
+                            if platform.system() == 'Windows':
+                                from windows.serial_gateway import Gateway
+                                from windows.control import Control
+                                control = Control(cfg, proc)
+                                control.start()
+                                bridge = Gateway(cfg, env)
+                                bridge.start()
+                                control.wait_ready()
+                            if proc.poll() is None:
+                                print(json.dumps({'message': 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
                             proc.wait()
                             if proc.returncode:
                                 error = subprocess.CalledProcessError(proc.returncode, cmd)
@@ -539,6 +545,8 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                         network_guard.revoke(lease, status_path, 'Среда остановлена')
                         if bridge:
                             bridge.close()
+                        if control:
+                            control.close()
                         stop.set()
                         events.wake.set()
                         if routes:

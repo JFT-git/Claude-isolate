@@ -176,16 +176,25 @@ def main():
                 process.stdin.write(b'GO\n')
                 process.stdin.flush()
                 process.stdin.close()
-                deadline = time.monotonic() + 60
+                deadline = time.monotonic() + 120
                 while True:
                     try:
-                        control = backend.qmp(cfg, 'query-status')
-                        (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
-                        break
+                        boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
                     except OSError:
-                        if process.poll() is not None or time.monotonic() >= deadline:
-                            raise RuntimeError('Packaged launcher did not expose the Windows control pipe')
-                        time.sleep(.5)
+                        boot = ''
+                    # Do not connect to QMP from the test until the guest has
+                    # booted: that used to unblock a broken launcher and hide
+                    # its permanent startup hang from CI.
+                    if 'Linux version ' in boot:
+                        break
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError('Guest did not boot without an external QMP client')
+                    time.sleep(.5)
+                for _ in range(2):
+                    control = backend.qmp(cfg, 'query-status')
+                    if not control.get('running'):
+                        raise RuntimeError('Windows control owner lost the running VM')
+                (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
                 deadline = time.monotonic() + 420
                 history = report / 'network-events.jsonl'
                 history.write_text('', encoding='utf-8')
@@ -234,6 +243,7 @@ def main():
         if boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK') != 2:
             raise RuntimeError('Both concurrent public HTTPS connections must succeed')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
+                  'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
                   'public_https_connections': boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK'),
                   'seconds': round(time.monotonic() - started, 1)}
