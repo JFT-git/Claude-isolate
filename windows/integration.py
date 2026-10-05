@@ -168,7 +168,11 @@ def main():
         boot = (report / 'boot.log').read_text(encoding='utf-8', errors='replace')
         for marker in ('DIRECT-BLOCKED', 'LOCAL-BLOCKED', 'PUBLIC-HTTPS-OK'):
             if 'WINDOWS-INTEGRATION: ' + marker not in boot:
-                print(boot[-8000:])
+                lines = boot.splitlines()
+                for index, line in enumerate(lines):
+                    if any(word in line for word in ('WINDOWS-INTEGRATION:', 'Traceback', 'Error:', 'ci-probe.py')):
+                        print('\n'.join(lines[max(0, index - 2):index + 12]))
+                print((report / 'core.log').read_text(encoding='utf-8', errors='replace')[-12000:])
                 raise RuntimeError('Guest network check failed: ' + marker)
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
