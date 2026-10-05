@@ -31,7 +31,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m unittest discover -s tests -v
-      - run: python -m compileall -q environment.py network_guard.py network_transport.py route_guard.py ubuntu_image.py session_lock.py scripts macos
+      - run: python -m compileall -q environment.py network_guard.py network_transport.py route_guard.py ubuntu_image.py session_lock.py scripts macos windows
       - if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -84,8 +84,6 @@ jobs:
             target: linux-x64
           - os: ubuntu-24.04-arm
             target: linux-arm64
-          - os: windows-2022
-            target: windows-x64-preview
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -108,6 +106,42 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+  windows:
+    name: Build Windows x64 app and installer
+    needs: test
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install hash-locked Windows tooling
+        run: python -m pip install --require-hashes -r requirements-windows.txt
+      - name: Test Windows setup and process ownership
+        run: python -m unittest discover -s tests -p test_windows.py -v
+      - name: Build GUI, worker and installer; verify clean installation
+        run: python windows/build.py
+      - name: Verify QEMU boot and packaged gateway
+        run: python windows/integration.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-windows-x64
+          path: |
+            dist/Claude-isolate-windows-x64.zip
+            dist/Claude-isolate-windows-x64.zip.sha256
+            dist/Claude-isolate-windows-x64-setup.exe
+            dist/Claude-isolate-windows-x64-setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: windows-verification
+          path: reports/windows/
+          if-no-files-found: warn
   sast:
     uses: ./.github/workflows/sast.yml
     permissions:
@@ -120,7 +154,7 @@ jobs:
   release:
     name: Publish prerelease
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    needs: [test, macos, portable, sast, sca]
+    needs: [test, macos, portable, windows, sast, sca]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -139,4 +173,4 @@ jobs:
         run: |
           cd dist
           sha256sum --check ./*.sha256
-          gh release create "$RELEASE_TAG" ./*.zip ./*.sha256 --verify-tag --prerelease --generate-notes --title "Claude Isolate $RELEASE_TAG"
+          gh release create "$RELEASE_TAG" ./*.zip ./*.exe ./*.sha256 --verify-tag --prerelease --generate-notes --title "Claude Isolate $RELEASE_TAG"

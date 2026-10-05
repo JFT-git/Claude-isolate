@@ -29,7 +29,7 @@ def package(target, output):
         z.writestr('Claude-isolate/BUILD.json', json.dumps({
             'target': target, 'python': platform.python_version(),
             'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
-            'distribution': 'source CLI; Windows is a development preview, not a verified VM runtime',
+            'distribution': 'Linux source CLI',
         }, indent=2))
     with archive.open('rb') as source:
         digest = hashlib.file_digest(source, 'sha256').hexdigest()
@@ -39,7 +39,7 @@ def package(target, output):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--target', required=True, choices=['linux-x64', 'linux-arm64', 'windows-x64-preview'])
+    parser.add_argument('--target', required=True, choices=['linux-x64', 'linux-arm64'])
     parser.add_argument('--output', type=Path, default=ROOT / 'dist')
     args = parser.parse_args()
     package(args.target, args.output)

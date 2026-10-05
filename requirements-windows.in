@@ -1,0 +1,6 @@
+# Windows build/runtime closure. Explicit Windows-only requirements allow the
+# hash lock to be regenerated from either macOS, Linux, or Windows.
+PyInstaller==6.22.3
+pycdlib==1.21.0
+pefile
+pywin32-ctypes

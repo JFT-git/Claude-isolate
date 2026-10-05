@@ -16,8 +16,8 @@ No blanket vulnerability allowlist and no `continue-on-error` security gates.
   security-severity >=4 or error-level results. Raw reports are retained even if
   GitHub code scanning upload is unavailable. CodeQL licensing/features may require
   GitHub Code Security for private repositories; never bypass the failed gate.
-- pip-audit: all locked CI/security-tool dependencies. Application Python runtime
-  has no third-party pip dependencies.
+- pip-audit: hash-locked CI/security-tool dependencies and the separate Windows
+  build/runtime closure, including the bundled pycdlib ISO writer.
 - Trivy: current source dependencies/secrets and both architectures of a disposable
   Ubuntu package-inventory container. A test keeps its explicit package list in
   sync with the actual guest installer. Both use identical pinned APT signing-key
@@ -38,7 +38,9 @@ all bundled JavaScript/native libraries. CodeQL/Bandit do not analyze upstream
 Claude, Firefox or QEMU source. No test logs into a Claude account in CI.
 
 A green CI result proves the listed checks passed, not end-to-end VPN isolation on
-all platforms. Windows is a developer preview. Linux/Windows lack the Darwin route
+all platforms. Windows CI tests the packaged GUI/worker, installer/uninstaller,
+process-tree ownership and a disposable QEMU guest's gateway. It does not test
+every desktop/VPN/hardware combination. Linux/Windows lack the Darwin route
 watcher and need manual routing/disconnection testing. A periodic public-IP probe
 cannot prevent every race or establish every site's egress under split tunneling.
 
@@ -50,6 +52,10 @@ key plus matching SHA256. Claude/Mozilla APT keys have pinned fingerprints. Pack
 and external services remain trust dependencies. macOS apps are ad-hoc signed,
 not Developer ID signed/notarized. Release checksums establish integrity, not a
 separate publisher identity. No signing certificate is committed or required.
+The Windows app/installer has no Authenticode certificate. Its first-run QEMU
+and GnuPG installation uses Microsoft's winget source and installer hash checks;
+these host dependencies are not bundled in the application. The CI-only QEMU
+installer has a fixed vendor URL and pinned SHA512 before it is executed.
 
 For a suspected vulnerability, use GitHub's private vulnerability reporting if
 enabled on this repository. Do not put credentials or exploit details against live

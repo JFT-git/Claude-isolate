@@ -20,6 +20,8 @@ jobs:
         run: |
           mkdir -p reports
           pip-audit --strict --disable-pip --no-deps -r requirements-security.txt -f json -o reports/pip-audit.json
+      - name: Audit locked Windows build and runtime dependencies
+        run: pip-audit --strict --disable-pip --no-deps -r requirements-windows.txt -f json -o reports/pip-audit-windows.json
       - name: Scan source dependencies and secrets
         if: always()
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0

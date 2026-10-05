@@ -1,2 +1,3 @@
-# Application runtime uses only Python's standard library; Python 3.12+ required.
+# macOS/Linux runtime uses only Python's standard library; Python 3.12+ required.
+# The Windows ISO writer and bundled executable tooling: requirements-windows.txt.
 # Host QEMU/GnuPG and guest Debian packages are tracked separately (SECURITY.md).

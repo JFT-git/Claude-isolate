@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shlex
 import shutil
 import socket
 import signal
@@ -150,19 +151,23 @@ def command(cfg, check=True):
              else 'whpx') if native else 'tcg'
     if arch == 'aarch64' and system == 'Windows':
         accel = 'tcg'
+    if system == 'Windows' and cfg.get('accelerator'):
+        if cfg['accelerator'] not in ('whpx', 'tcg'):
+            raise ValueError('Unsupported Windows accelerator')
+        accel = cfg['accelerator']
     exe = str(local_path(cfg['qemu_executable'])) if cfg.get('qemu_executable') else (tool(f'qemu-system-{arch}') if check else f'qemu-system-{arch}')
     mode = cfg.get('network_mode', 'system')
-    relay = [sys.executable, str(ROOT / 'environment.py'), 'relay', '--mode', mode]
+    relay = ([sys.executable, 'relay'] if getattr(sys, 'frozen', False)
+             else [sys.executable, str(ROOT / 'environment.py'), 'relay'])
+    relay += ['--mode', mode]
     relay += ['--web-access', cfg.get('web_access', 'services')]
     if mode == 'proxy':
         relay += ['--port', str(cfg['proxy_port'])]
     # QEMU's cmd forwarding starts a separate relay for every TCP connection.
     # All values are local validated config / fixed paths, never guest input.
-    if os.name == 'nt':
-        relay_cmd = subprocess.list2cmdline(relay)
-    else:
-        import shlex
-        relay_cmd = shlex.join(relay)
+    # libslirp uses GLib g_shell_parse_argv on Windows too, rather than the
+    # CommandLineToArgvW parser. Backslashes and spaces need POSIX quoting.
+    relay_cmd = shlex.join(relay)
     net = ('user,id=isolated,restrict=on,ipv6=off,'
            'guestfwd=tcp:10.0.2.100:7890-cmd:' + relay_cmd.replace(',', ',,'))
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
@@ -179,6 +184,11 @@ def command(cfg, check=True):
         cmd += ['-display', 'cocoa,zoom-to-fit=on,zoom-interpolation=on,full-screen=on']
         if cfg.get('qemu_data_dir'):
             cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
+    elif system == 'Windows':
+        display = cfg.get('display', 'sdl')
+        if display not in ('sdl', 'none'):
+            raise ValueError('Unsupported Windows display')
+        cmd += ['-display', display]
     if arch == 'aarch64':
         firmware = local_path(cfg['firmware'])
         if check and not firmware.is_file():
@@ -187,6 +197,10 @@ def command(cfg, check=True):
     if cfg.get('qmp_socket'):
         # Host-only control channel, never attached/mounted inside the guest.
         cmd += ['-qmp', f'unix:{qemu_path(local_path(cfg["qmp_socket"]))},server=on,wait=off']
+    if cfg.get('qmp_pipe'):
+        if system != 'Windows' or not re.fullmatch(r'claude-isolate-[0-9a-f]{32}', cfg['qmp_pipe']):
+            raise ValueError('Invalid Windows control pipe')
+        cmd += ['-qmp', 'pipe:' + cfg['qmp_pipe']]
     if cfg.get('boot_log'):
         cmd[cmd.index('-serial') + 1] = 'file:' + qemu_path(local_path(cfg['boot_log']))
     # No shared folders, SPICE agent, clipboard channel, host sockets,
@@ -380,6 +394,10 @@ def prepare(cfg, base, digest):
         if platform.system() == 'Darwin':
             subprocess.run([tool('hdiutil'), 'makehybrid', '-iso', '-joliet',
                             '-default-volume-name', 'cidata', '-o', str(staged_seed), str(seed_dir)], check=True)
+        elif platform.system() == 'Windows':
+            # The small bundled ISO writer removes the mkisofs dependency.
+            from windows.backend import seed_iso
+            seed_iso(seed_dir, staged_seed)
         else:
             iso = shutil.which('genisoimage') or shutil.which('mkisofs')
             if not iso:
