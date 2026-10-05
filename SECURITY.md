@@ -53,9 +53,11 @@ and external services remain trust dependencies. macOS apps are ad-hoc signed,
 not Developer ID signed/notarized. Release checksums establish integrity, not a
 separate publisher identity. No signing certificate is committed or required.
 The Windows app/installer has no Authenticode certificate. Its first-run QEMU
-and GnuPG installation uses Microsoft's winget source and installer hash checks;
+installation uses Microsoft's winget source and installer hash checks;
 these host dependencies are not bundled in the application. The CI-only QEMU
-and GnuPG installers have fixed vendor URLs and pinned SHA512/SHA256 before execution.
+installer has a fixed vendor URL and pinned SHA512 before execution. Private GnuPG
+uses the official WiX CAB payload pinned by SHA256, extracted by Windows expand.exe
+without running its interactive installer or modifying global GnuPG configuration.
 
 For a suspected vulnerability, use GitHub's private vulnerability reporting if
 enabled on this repository. Do not put credentials or exploit details against live

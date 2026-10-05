@@ -12,9 +12,28 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import environment
 from windows import backend
+from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_native_gnupg_bad_checksum_is_rejected_before_extraction(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(gnupg.ubuntu_image, 'fetch', side_effect=lambda url, target: target.write_bytes(b'invalid')), \
+             patch.object(gnupg.subprocess, 'run') as execute:
+            with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
+                gnupg.install(Path(temporary))
+            execute.assert_not_called()
+
+    def test_gnupg_metadata_cannot_escape_private_directory(self):
+        import struct
+        for filename in ('k:\\bin\\..\\..\\outside.exe', 'relative.exe'):
+            cab = bytearray(36)
+            cab[:4] = b'MSCF'
+            struct.pack_into('<I', cab, 8, 36)
+            xml = ('<root><field cabinetFileId="0">' + filename + '</field></root>').encode()
+            with self.assertRaisesRegex(RuntimeError, 'Unsafe'):
+                gnupg.payload(bytes(cab) + xml)
+
     def test_cyrillic_paths_and_stop_marker_work_without_utf8_mode(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / 'Тест'

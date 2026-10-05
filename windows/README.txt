@@ -6,7 +6,8 @@ The separate *-setup.exe installs the app and a Start Menu shortcut per user.
 Python is included. No Python or command-line setup is required.
 
 Click the Start button to prepare and boot Linux. If QEMU or GnuPG is missing,
-the app installs it through Microsoft's winget source. Windows may show an
+the app installs QEMU through Microsoft's winget source and downloads a hash-pinned
+private GnuPG from the official vendor. Windows may show an
 administrator consent prompt for these dependencies. The App Installer package
 (winget) must be available; update it in Microsoft Store if necessary.
 Ubuntu is downloaded and verified with the pinned Ubuntu signing key. The

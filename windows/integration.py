@@ -21,8 +21,6 @@ from windows.job import Job
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
                'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
-GPG_URL = 'https://gnupg.org/ftp/gcrypt/binary/gnupg-w32-2.5.24_20260923.exe'
-GPG_SHA256 = 'ea6f9dee2cccd83287432625b8b399173805add81d27067fcaf019c0c4da1ad8'
 PROBE = '''import concurrent.futures, socket, ssl
 
 def blocked_direct():
@@ -102,21 +100,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix='win-boot-', dir=build) as temporary:
         directory = Path(temporary)
         executable = qemu(directory)
-        gpg = backend.find_tool('gpg')
-        if not gpg:
-            installer = directory / 'gpg-setup.exe'
-            ubuntu_image.fetch(GPG_URL, installer)
-            with installer.open('rb') as source:
-                if hashlib.file_digest(source, 'sha256').hexdigest() != GPG_SHA256:
-                    raise RuntimeError('Pinned native GnuPG installer checksum mismatch')
-            destination = directory / 'GnuPG'
-            subprocess.run([str(installer), '/S', '/D=' + str(destination)],
-                           check=True, timeout=180)
-            os.environ['PATH'] = str(destination / 'bin') + os.pathsep + os.environ['PATH']
-            installer.unlink()
-            gpg = backend.find_tool('gpg')
-            if not gpg:
-                raise RuntimeError('Native GnuPG installation failed')
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')

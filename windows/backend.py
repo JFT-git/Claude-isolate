@@ -15,6 +15,7 @@ import environment
 import network_guard
 import ubuntu_image
 from session_lock import exclusive
+from windows import gnupg
 
 VERSION = '0.3.0'
 
@@ -78,8 +79,10 @@ def find_tool(name):
 def dependencies(data, cfg):
     if cfg.get('qemu_executable') and Path(cfg['qemu_executable']).is_file():
         os.environ['PATH'] = str(Path(cfg['qemu_executable']).parent) + os.pathsep + os.environ.get('PATH', '')
-    packages = [('qemu-system-x86_64', 'SoftwareFreedomConservancy.QEMU'),
-                ('gpg', 'GnuPG.GnuPG')]
+    private_gpg = data / 'tools' / ('GnuPG-' + gnupg.VERSION) / 'bin'
+    if (private_gpg / 'gpg.exe').is_file():
+        os.environ['PATH'] = str(private_gpg) + os.pathsep + os.environ.get('PATH', '')
+    packages = [('qemu-system-x86_64', 'SoftwareFreedomConservancy.QEMU')]
     for name, package in packages:
         if find_tool(name):
             continue
@@ -95,6 +98,10 @@ def dependencies(data, cfg):
                         '--disable-interactivity'], check=True, timeout=900)
         if not find_tool(name):
             raise RuntimeError('Установленный компонент не найден: ' + name)
+    if not find_tool('gpg'):
+        emit('Загрузка отдельного GnuPG и проверка его SHA256…')
+        installed = gnupg.install(data)
+        os.environ['PATH'] = str(installed.parent) + os.pathsep + os.environ.get('PATH', '')
     tools = [find_tool(name) for name in ('qemu-system-x86_64', 'qemu-img', 'gpg')]
     if any(tool is None for tool in tools):
         raise RuntimeError('Установка QEMU неполная: отсутствует qemu-img.exe.')
