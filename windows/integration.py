@@ -19,6 +19,7 @@ from windows import backend
 from windows import gnupg
 from windows.job import Job
 from windows.serial_gateway import boot_command
+from windows.control import paths as control_paths
 
 QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
 QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
@@ -219,7 +220,12 @@ def main():
                     # booted: that used to unblock a broken launcher and hide
                     # its permanent startup hang from CI.
                     if 'Linux version ' in boot:
-                        break
+                        try:
+                            ready = network_guard.read_state(control_paths(cfg)['ready'])
+                            if isinstance(ready, dict) and ready.get('ready'):
+                                break
+                        except (OSError, ValueError):
+                            pass
                     if process.poll() is not None or time.monotonic() >= deadline:
                         raise RuntimeError('Guest did not boot without an external QMP client')
                     time.sleep(.5)

@@ -5,7 +5,6 @@ disconnected client. A private, session-bound JSON mailbox lets other launcher
 processes request only status and ACPI shutdown from this persistent owner.
 """
 import json
-import os
 from pathlib import Path
 import re
 import queue
@@ -16,6 +15,7 @@ import uuid
 
 from network_guard import read_state, write_state
 from session_lock import exclusive
+from windows.pipe import NamedPipe
 
 COMMANDS = ('query-status', 'system_powerdown')
 
@@ -52,7 +52,7 @@ def request(cfg, execute, timeout=10):
 
 
 class Control:
-    def __init__(self, cfg, process, reader_factory=None):
+    def __init__(self, cfg, process, reader_factory=None, connector=None):
         self.cfg, self.process = cfg, process
         self.files = paths(cfg)
         self.session = uuid.uuid4().hex
@@ -61,7 +61,8 @@ class Control:
         self.error = None
         self.replies = queue.Queue(maxsize=128)
         self.reader = None
-        self.reader_factory = reader_factory or (lambda pipe: os.fdopen(os.dup(pipe.fileno()), 'rb', buffering=0))
+        self.reader_factory = reader_factory or (lambda pipe: pipe)
+        self.connector = connector or NamedPipe
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def start(self):
@@ -97,9 +98,7 @@ class Control:
             pipe.close()
 
     def start_reader(self, pipe):
-        # Windows CRT serializes synchronous reads/writes on one descriptor.
-        # A duplicate descriptor gives the reader its own lock while sharing
-        # the same full-duplex kernel pipe connection.
+        # NamedPipe supports concurrent OVERLAPPED reads and writes.
         stream = self.reader_factory(pipe)
         self.reader = threading.Thread(target=self.read_replies, args=(stream,), daemon=True)
         self.reader.start()
@@ -157,7 +156,7 @@ class Control:
             deadline = time.monotonic() + 60
             while not self.stop.is_set() and self.process.poll() is None:
                 try:
-                    pipe = open('\\\\.\\pipe\\' + self.cfg['qmp_pipe'], 'r+b', buffering=0)
+                    pipe = self.connector('\\\\.\\pipe\\' + self.cfg['qmp_pipe'])
                     break
                 except OSError:
                     if time.monotonic() >= deadline:

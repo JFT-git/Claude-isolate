@@ -47,18 +47,18 @@ class WindowsControlTests(unittest.TestCase):
                     server.close()
             peer = threading.Thread(target=qemu, daemon=True)
             peer.start()
-            owner = Control(cfg, process, reader_factory=lambda pipe: client.makefile('rb', buffering=0))
+            owner = Control(cfg, process, reader_factory=lambda pipe: client.makefile('rb', buffering=0),
+                            connector=lambda path: stream)
             try:
-                with patch('windows.control.open', return_value=stream, create=True):
-                    owner.start()
-                    self.assertTrue(owner.wait_ready(2))
-                    # No external request was needed to complete negotiation.
-                    self.assertEqual(commands, ['qmp_capabilities', 'query-status'])
-                    self.assertTrue(events_sent.wait(5), 'Events blocked QEMU without an external request')
-                    for _ in range(2):
-                        self.assertTrue(request(cfg, 'query-status', timeout=2)['running'])
-                    self.assertEqual(request(cfg, 'system_powerdown', timeout=2), {})
-                    owner.close()
+                owner.start()
+                self.assertTrue(owner.wait_ready(2))
+                # No external request was needed to complete negotiation.
+                self.assertEqual(commands, ['qmp_capabilities', 'query-status'])
+                self.assertTrue(events_sent.wait(5), 'Events blocked QEMU without an external request')
+                for _ in range(2):
+                    self.assertTrue(request(cfg, 'query-status', timeout=2)['running'])
+                self.assertEqual(request(cfg, 'system_powerdown', timeout=2), {})
+                owner.close()
             finally:
                 process.poll.return_value = 0
                 owner.close()

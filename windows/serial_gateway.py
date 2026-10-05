@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from windows.pipe import NamedPipe
 
 
 def boot_command(root):
@@ -26,41 +27,6 @@ def boot_command(root):
             'ip address replace 10.0.2.100/32 dev lo; '
             '(while true; do ' + shlex.join(command) +
             '; sleep 1; done) </dev/null >/run/claude-gateway.log 2>&1 &']
-
-
-class Pipe:
-    def __init__(self, pipe):
-        self.pipe = pipe
-        # _read holds the Windows CRT descriptor lock until input arrives.
-        # Sharing that descriptor with _write stalls SSH until a keepalive or
-        # guest packet happens to release it. Separate descriptors are required
-        # for full-duplex traffic on the same kernel named-pipe connection.
-        self.writer = (os.fdopen(os.dup(pipe.fileno()), 'wb', buffering=0)
-                       if os.name == 'nt' else pipe)
-
-    def recv(self, count):
-        return self.pipe.read(count)
-
-    def send(self, data):
-        return self.writer.write(data)
-
-    def settimeout(self, value):
-        pass  # The QEMU pipe closes when the owned VM exits.
-
-    def close(self):
-        if os.name == 'nt':
-            import ctypes
-            import msvcrt
-            api = ctypes.WinDLL('kernel32', use_last_error=True)
-            api.CancelIoEx.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-            try:
-                api.CancelIoEx(msvcrt.get_osfhandle(self.pipe.fileno()), None)
-            except (ValueError, OSError):
-                pass
-        if self.writer is not self.pipe and not self.writer.closed:
-            self.writer.close()
-        if not self.pipe.closed:
-            self.pipe.close()
 
 
 class Gateway:
@@ -157,14 +123,14 @@ class Gateway:
             deadline = time.monotonic() + 60
             while not self.stop.is_set():
                 try:
-                    pipe = open('\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-gateway', 'r+b', buffering=0)
+                    pipe = NamedPipe('\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-gateway')
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
                         raise RuntimeError('Private Windows gateway pipe did not start')
                     self.stop.wait(.2)
             if pipe:
-                self.serve(Pipe(pipe))
+                self.serve(pipe)
         except Exception as error:
             print('Windows private gateway: ' + str(error), file=sys.stderr, flush=True)
         finally:
