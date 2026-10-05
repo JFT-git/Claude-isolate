@@ -71,7 +71,9 @@ class WindowsBackendTests(unittest.TestCase):
                 subprocess.run(['sh', '-n', str(script)], check=True)
         self.assertIn('WantedBy=multi-user.target', command[2])
         self.assertIn('Restart=always', command[2])
-        self.assertIn('enable --now claude-gateway.service', command[2])
+        self.assertIn('enable claude-gateway.service', command[2])
+        self.assertIn('--no-block start claude-gateway.service', command[2])
+        self.assertNotIn('enable --now', command[2])
         self.assertNotIn('while true', command[2])
 
     def test_ready_status_after_reboot_without_first_install_marker(self):

@@ -35,7 +35,11 @@ def boot_command(root):
             'printf %s ' + shlex.quote(stream) + ' > ' + stream_path + '; '
             'chmod 700 ' + stream_path + '; printf %s ' + shlex.quote(service) +
             ' > /etc/systemd/system/claude-gateway.service; '
-            'systemctl daemon-reload; systemctl enable --now claude-gateway.service']
+            'systemctl daemon-reload; systemctl enable claude-gateway.service; '
+            # bootcmd runs before basic.target. Waiting here for a regular
+            # service (which starts after basic.target) creates an ordering
+            # deadlock. Queue it and let cloud-init release the early stage.
+            'systemctl --no-block start claude-gateway.service']
 
 
 class Gateway:
