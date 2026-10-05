@@ -215,6 +215,8 @@ class WindowsBackendTests(unittest.TestCase):
             self.assertNotIn('guestfwd=', net)
             self.assertIn('restrict=on', net)
             self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
+            self.assertIn('VGA,edid=off,xres=1920,yres=1200', cmd)
+            self.assertNotIn('virtio-gpu-pci,edid=off,xres=1920,yres=1200', cmd)
             self.assertIn('pipe:' + cfg['qmp_pipe'], cmd)
             self.assertFalse(any('tcp:' in c for c in cmd if c.startswith('pipe:')))
 
