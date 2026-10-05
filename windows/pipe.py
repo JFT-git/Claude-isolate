@@ -127,6 +127,11 @@ class NamedPipe:
     recv = read
     send = write
 
+    @property
+    def _closed(self):
+        # Paramiko's socket-compatible shutdown inspects this attribute.
+        return self.closed
+
     def settimeout(self, value):
         pass  # Cancellation and QEMU exit release pending I/O; no partial SSH writes.
 

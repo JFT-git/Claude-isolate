@@ -57,6 +57,7 @@ class NativePipeTests(unittest.TestCase):
         peer.start()
         try:
             client = NamedPipe(path)
+            self.assertFalse(client._closed)
             self.assertEqual(client.read(0), b'')
             self.assertEqual(client.write(b''), 0)
             def receive():
@@ -86,6 +87,7 @@ class NativePipeTests(unittest.TestCase):
         finally:
             if client:
                 client.close()
+                self.assertTrue(client._closed)
             server.close()
             peer.join(5)
         self.assertFalse(failures)
