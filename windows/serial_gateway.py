@@ -11,7 +11,7 @@ import subprocess
 import sys
 import threading
 import time
-from windows.pipe import NamedPipe
+from windows.pipe import gateway_pipe
 
 
 def boot_command(root):
@@ -123,7 +123,7 @@ class Gateway:
             deadline = time.monotonic() + 60
             while not self.stop.is_set():
                 try:
-                    pipe = NamedPipe('\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-gateway')
+                    pipe = gateway_pipe('\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-gateway')
                     break
                 except OSError:
                     if time.monotonic() >= deadline:

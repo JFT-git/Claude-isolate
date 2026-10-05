@@ -5,8 +5,10 @@ import os
 import threading
 import unittest
 import uuid
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from windows.pipe import NamedPipe, Overlapped, api
+from windows.pipe import NamedPipe, Overlapped, api, gateway_pipe, is_wine
 
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows named-pipe test')
@@ -134,3 +136,26 @@ class NativePipeTests(unittest.TestCase):
             if closer.ident is not None:
                 closer.join(2)
             client.close()
+
+
+class GatewayPipeSelectionTests(unittest.TestCase):
+    def test_native_windows_never_uses_the_synchronous_wine_adapter(self):
+        for wine in (False, True):
+            with self.subTest(wine=wine), patch('windows.pipe.is_wine', return_value=wine), \
+                 patch('windows.pipe.NamedPipe') as native, patch('windows.pipe.WinePipe') as compatible:
+                result = gateway_pipe('private-pipe')
+                selected, unused = (compatible, native) if wine else (native, compatible)
+                selected.assert_called_once_with('private-pipe')
+                unused.assert_not_called()
+                self.assertIs(result, selected.return_value)
+
+    def test_wine_detection_uses_an_actual_ntdll_export(self):
+        try:
+            for library, expected in ((object(), False), (SimpleNamespace(wine_get_version=object()), True)):
+                is_wine.cache_clear()
+                with patch('windows.pipe.ctypes.WinDLL', return_value=library, create=True) as load:
+                    self.assertIs(is_wine(), expected)
+                    self.assertIs(is_wine(), expected)
+                    load.assert_called_once_with('ntdll')
+        finally:
+            is_wine.cache_clear()

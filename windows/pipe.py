@@ -2,6 +2,7 @@
 import ctypes
 from ctypes import wintypes
 from functools import lru_cache
+import os
 import threading
 
 
@@ -156,3 +157,58 @@ class NamedPipe:
             finally:
                 self.writer_lock.release()
                 self.reader_lock.release()
+
+
+@lru_cache(maxsize=1)
+def is_wine():
+    if not hasattr(ctypes, 'WinDLL'):
+        return False
+    try:
+        return hasattr(ctypes.WinDLL('ntdll'), 'wine_get_version')
+    except OSError:
+        return False
+
+
+class WinePipe:
+    """Use Wine's working CRT pipe path; never selected on native Windows."""
+    def __init__(self, path):
+        self.pipe = open(path, 'r+b', buffering=0)
+        try:
+            self.writer = os.fdopen(os.dup(self.pipe.fileno()), 'wb', buffering=0)
+        except BaseException:
+            self.pipe.close()
+            raise
+        self.close_lock = threading.Lock()
+
+    @property
+    def closed(self):
+        return self.pipe.closed
+
+    @property
+    def _closed(self):
+        return self.closed
+
+    def recv(self, count):
+        return self.pipe.read(count)
+
+    def send(self, data):
+        return self.writer.write(data)
+
+    def settimeout(self, value):
+        pass
+
+    def close(self):
+        with self.close_lock:
+            if self.closed:
+                return
+            import msvcrt
+            api().CancelIoEx(msvcrt.get_osfhandle(self.pipe.fileno()), None)
+            self.writer.close()
+            self.pipe.close()
+
+
+def gateway_pipe(path):
+    # CrossOver's Win32 overlapped pipe path can stall QEMU while Linux opens
+    # the virtual serial port. Its CRT path boots correctly. Windows retains
+    # independent OVERLAPPED I/O to avoid synchronous FILE_OBJECT deadlocks.
+    return WinePipe(path) if is_wine() else NamedPipe(path)
