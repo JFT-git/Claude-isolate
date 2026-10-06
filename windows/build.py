@@ -14,6 +14,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / 'dist'
+sys.path.insert(0, str(ROOT))
+from windows import runtime
 
 
 def run(command, **kwargs):
@@ -38,6 +40,8 @@ def smoke(folder, directory):
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
     if 'Claude Isolate 0.3.12' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
+    for executable in ('qemu/qemu-system-x86_64.exe', 'qemu/qemu-img.exe', 'GnuPG/bin/gpg.exe'):
+        run([str(folder / 'runtime' / executable), '--version'], capture_output=True, env=env, timeout=30)
     report = directory / 'gui.json'
     data = directory / 'private data Тест'
     run([str(folder / 'Claude Isolate.exe'), '--data', str(data), '--smoke-test', str(report)], env=env, timeout=60)
@@ -79,6 +83,8 @@ def main():
     folder = DIST / 'windows' / 'Claude Isolate'
     shutil.copy2(ROOT / 'windows/README.txt', folder / 'README.txt')
     licenses(folder)
+    manifest = runtime.bundle(folder)
+    print('Bundled runtime:', len(manifest['files']), 'files', flush=True)
     (folder / 'BUILD.json').write_text(json.dumps({
         'version': '0.3.12', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
         'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),

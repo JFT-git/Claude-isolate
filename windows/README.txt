@@ -5,11 +5,10 @@ Claude Isolate Core.exe together when using the portable ZIP.
 The separate *-setup.exe installs the app and a Start Menu shortcut per user.
 Python is included. No Python or command-line setup is required.
 
-Click the Start button to prepare and boot Linux. If QEMU or GnuPG is missing,
-the app installs QEMU through Microsoft's winget source and downloads a hash-pinned
-private GnuPG from the official vendor. Windows may show an
-administrator consent prompt for these dependencies. The App Installer package
-(winget) must be available; update it in Microsoft Store if necessary.
+Click Start to prepare and boot Linux. Python, the tested QEMU x64 runtime,
+and portable GnuPG are included. No winget, Microsoft Store, administrator
+consent, WSL, Hyper-V installation or manual Windows feature setup is needed.
+Keep the runtime folder with the portable ZIP's executables.
 Ubuntu is downloaded and verified with the pinned Ubuntu signing key. The
 guest installs XFCE, Claude Desktop, and Firefox automatically on its first boot.
 
@@ -21,9 +20,15 @@ Synthetic VPN DNS answers in 198.18.0.0/15 are resolved to real public addresses
 using certificate-verified Cloudflare DNS-over-HTTPS over the host's routing.
 Local addresses remain blocked. If secure DNS cannot be reached, access stays
 closed and the controller displays the DNS error.
-The default allocation is 3 GB RAM and 2 CPUs. Enable Windows Hypervisor Platform
-and hardware virtualization for fast WHPX acceleration. Without it, the app uses
-slower software emulation. The guest display supports Ctrl+Alt+F for full screen.
+Automatic resources allocate 2-3 GB RAM and up to 2 virtual CPUs, keeping
+memory available for Windows. The host needs at least 4 GB RAM; 8 GB or more
+is recommended. Close other applications if available memory is insufficient.
+Manual economy (3 GB/2 CPUs) and standard (6 GB/4 CPUs) profiles are optional.
+The launcher uses existing WHPX acceleration when available, otherwise software
+emulation automatically. No Windows features are enabled or security settings
+changed. Software emulation is slower, especially during first installation.
+The guest display supports Ctrl+Alt+F for full screen. Supported builds target
+Windows 10 1903+ / Windows 11 x64; Windows 7 and 32-bit Windows are unsupported.
 
 Network protection uses periodic IP checks on Windows. It does not guarantee
 instant isolation after VPN disconnection or prevent account restrictions.

@@ -65,10 +65,10 @@ class Application:
         resources.pack(fill='x', pady=(18, 8))
         ttk.Label(resources, text='Ресурсы:').pack(side='left')
         self.resources = ttk.Combobox(resources, state='readonly', width=30,
-                                      values=['Экономно: 3 ГБ / 2 CPU', 'Стандартно: 6 ГБ / 4 CPU'])
+                                      values=['Автоматически: по памяти ПК', 'Экономно: 3 ГБ / 2 CPU', 'Стандартно: 6 ГБ / 4 CPU'])
         self.resources.pack(side='left', padx=8)
         _, cfg = backend.config(data)
-        self.resources.current(0 if cfg['memory_mb'] <= 3072 else 1)
+        self.resources.current(0 if cfg.get('resources_mode') == 'auto' else 1 if cfg['memory_mb'] <= 3072 else 2)
         self.resources.bind('<<ComboboxSelected>>', self.set_resources)
         acceleration = ttk.Frame(frame)
         acceleration.pack(fill='x', pady=(4, 8))
@@ -81,7 +81,7 @@ class Application:
         ttk.Button(frame, text='Открыть папку среды и журналы',
                    command=lambda: os.startfile(str(data))).pack(anchor='w', pady=(8, 0))
         ttk.Label(frame, text='Первый запуск загружает Ubuntu и устанавливает приложения. '
-                  'Для QEMU и GnuPG может появиться системный запрос Windows.',
+                  'Python, QEMU и GnuPG включены. Компоненты Windows включать не нужно.',
                   wraplength=640).pack(anchor='w', pady=(14, 0))
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.poll()
@@ -132,7 +132,7 @@ class Application:
 
     def set_resources(self, event=None):
         try:
-            self.launch('economy' if self.resources.current() == 0 else 'standard')
+            self.launch(('resources-auto', 'economy', 'standard')[self.resources.current()])
         except (OSError, RuntimeError) as error:
             self.message.set(str(error))
 

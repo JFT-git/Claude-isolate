@@ -335,14 +335,68 @@ class WindowsBackendTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         environment.command(dict(cfg, **{key: value}), check=False)
 
-    def test_missing_winget_reports_actionable_error(self):
+    def test_missing_runtime_does_not_install_system_components(self):
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(backend, 'find_tool', return_value=None), \
              patch.object(backend.shutil, 'which', return_value=None), \
              patch.object(backend.subprocess, 'run') as execute:
-            with self.assertRaisesRegex(RuntimeError, 'App Installer'):
+            with self.assertRaisesRegex(RuntimeError, 'runtime'):
                 backend.dependencies(Path(temporary), {})
             execute.assert_not_called()
+
+    def test_bundled_tools_override_old_global_qemu_without_installing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            runtime = directory / 'runtime'
+            for name in ('qemu/qemu-system-x86_64.exe', 'qemu/qemu-img.exe', 'GnuPG/bin/gpg.exe'):
+                path = runtime / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            data = directory / 'data'
+            _, cfg = backend.config(data)
+            cfg['qemu_executable'] = str(directory / 'old-global/qemu.exe')
+            def find(name):
+                return runtime / ('GnuPG/bin' if name == 'gpg' else 'qemu') / (name + '.exe')
+            with patch.object(backend, 'runtime_directory', return_value=runtime), \
+                 patch.object(backend, 'find_tool', side_effect=find), \
+                 patch.object(backend.gnupg, 'install') as install, \
+                 patch.dict(os.environ, {'PATH': ''}), \
+                 patch.object(backend.subprocess, 'run') as execute:
+                backend.dependencies(data, cfg)
+                execute.assert_not_called()
+                install.assert_not_called()
+            self.assertEqual(cfg['qemu_executable'], str(runtime / 'qemu/qemu-system-x86_64.exe'))
+            self.assertEqual(cfg['qemu_data_dir'], str(runtime / 'qemu/share'))
+
+    def test_automatic_resources_reserve_host_memory_and_handle_small_cpu(self):
+        for total, available, cpus, expected in ((16384, 10000, 8, (3072, 2)),
+                                                (8192, 3584, 2, (2560, 1)),
+                                                (4096, 3072, 1, (2048, 1))):
+            with patch.object(backend, 'host_memory', return_value=(total, available)), \
+                 patch.object(backend.os, 'cpu_count', return_value=cpus):
+                resources = backend.automatic_resources()
+                self.assertEqual((resources['memory_mb'], resources['cpus']), expected)
+                self.assertLessEqual(resources['memory_mb'], available - 1024)
+
+    def test_low_free_memory_blocks_boot_and_manual_settings_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            cfg.update(resources_mode='standard', memory_mb=6144, cpus=4)
+            with patch.object(backend, 'host_memory', return_value=(16384, 4000)):
+                with self.assertRaisesRegex(RuntimeError, 'Закройте'):
+                    backend.configure_resources(path, cfg)
+            with patch.object(backend, 'host_memory', return_value=(16384, 9000)):
+                backend.configure_resources(path, cfg)
+            self.assertEqual((cfg['memory_mb'], cfg['cpus']), (6144, 4))
+
+    def test_windows_tcg_uses_multiple_threads_and_explicit_bundled_firmware(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, cfg = backend.config(Path(temporary))
+            cfg.update(accelerator='tcg', qemu_data_dir=str(Path(temporary) / 'runtime/share'))
+            with patch.object(environment.platform, 'system', return_value='Windows'):
+                plan = environment.command(cfg, check=False)
+            self.assertEqual(plan[plan.index('-accel') + 1], 'tcg,thread=multi')
+            self.assertEqual(Path(plan[plan.index('-L') + 1]), Path(cfg['qemu_data_dir']).resolve())
 
     def test_git_msys_gpg_is_not_selected_as_native_gnupg(self):
         with patch.object(backend.shutil, 'which', return_value=r'C:\Program Files\Git\usr\bin\gpg.exe'), \

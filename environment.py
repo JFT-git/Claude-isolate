@@ -179,7 +179,7 @@ def command(cfg, check=True):
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
            # advertises AMD SVM by default, even on an Intel WHPX host.
-           '-accel', accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64,svm=off' if accel == 'whpx' else 'max',
+           '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64,svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
            '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
@@ -195,6 +195,8 @@ def command(cfg, check=True):
         if cfg.get('qemu_data_dir'):
             cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
     elif system == 'Windows':
+        if cfg.get('qemu_data_dir'):
+            cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
         cmd += ['-display', 'gtk,gl=off,zoom-to-fit=on' if display == 'gtk' else display]
         import uuid
         pipe = cfg.setdefault('qmp_pipe', 'claude-isolate-' + uuid.uuid4().hex)

@@ -22,9 +22,6 @@ from windows.job import Job
 from windows.serial_gateway import boot_command
 from windows.control import paths as control_paths
 
-QEMU_URL = 'https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe'
-QEMU_SHA512 = ('5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037f'
-               'dfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543')
 PROBE = '''import concurrent.futures, hashlib, http.client, socket, ssl, time
 
 def blocked_direct():
@@ -160,27 +157,6 @@ print('WINDOWS-INTEGRATION: DESKTOP-READY', flush=True)
 '''
 
 
-def qemu(directory):
-    executable = backend.find_tool('qemu-system-x86_64')
-    if executable:
-        return executable
-    installer = directory / 'qemu-setup.exe'
-    ubuntu_image.fetch(QEMU_URL, installer)
-    with installer.open('rb') as source:
-        digest = hashlib.file_digest(source, 'sha512').hexdigest()
-    if digest != QEMU_SHA512:
-        raise RuntimeError('Pinned Windows QEMU installer checksum mismatch')
-    destination = directory / 'qemu'
-    subprocess.run([str(installer), '/S', '/D=' + str(destination)], check=True, timeout=180)
-    installer.unlink()
-    executable = destination / 'qemu-system-x86_64.exe'
-    if not executable.is_file():
-        executable = backend.find_tool('qemu-system-x86_64')
-    if not executable:
-        raise RuntimeError('Windows QEMU installation failed')
-    return executable
-
-
 def run_guest(core, path, cfg, report, desktop):
     report.mkdir(parents=True, exist_ok=True)
     job = Job()
@@ -302,13 +278,13 @@ def main():
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix='win-boot-', dir=build) as temporary:
         directory = Path(temporary)
-        print('Installing checksum-verified Windows QEMU…', flush=True)
-        executable = qemu(directory)
-        os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
+        print('Verifying bundled QEMU with no external tools in PATH…', flush=True)
+        executable = ROOT / 'dist/windows/Claude Isolate/runtime/qemu/qemu-system-x86_64.exe'
+        os.environ['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
         cfg.update(qemu_executable=str(executable), accelerator='tcg',
-                   memory_mb=3072 if args.desktop else 2048)
+                   memory_mb=3072 if args.desktop else 2048, resources_mode='economy')
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
         # Use the actual packaged first-run setup, including GPG, qemu-img,
@@ -372,7 +348,7 @@ def main():
         for file in evidence.iterdir():
             shutil.copy2(file, report / file.name)
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
-                  'sdl_guest_window': True, 'automatic_desktop_verified': args.desktop,
+                  'guest_display': 'gtk', 'bundled_runtime': True, 'external_tools_removed_from_path': True, 'automatic_desktop_verified': args.desktop,
                   'boot_cycles': len(boots), 'gateway_after_reboot_verified': len(boots) == 2,
                   'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
                   'bulk_https_checksum_verified': True,
