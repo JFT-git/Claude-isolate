@@ -8,7 +8,7 @@ import sys
 from urllib.parse import unquote
 
 REVIEW_IDS = {'CVE-2022-25235', 'CVE-2022-25236'}
-REVIEW_PURL = 'pkg:deb/ubuntu/firefox@157.0~build1'
+REVIEW_VERSIONS = {'157.0~build1', '157.0.1~build1'}
 EXPIRES = date(2026, 11, 1)
 
 
@@ -32,8 +32,8 @@ def verify(raw, filtered, today=None):
         # Independently reject that case and any broader removal here.
         if ((today or date.today()) >= EXPIRES or kind != 'ubuntu'
                 or cve not in REVIEW_IDS or package != 'firefox'
-                or version != '157.0~build1'
-                or unquote(purl.split('?', 1)[0]) != REVIEW_PURL):
+                or version not in REVIEW_VERSIONS
+                or unquote(purl.split('?', 1)[0]) != 'pkg:deb/ubuntu/firefox@' + version):
             raise ValueError(f'Unreviewed finding removed: {cve} / {package} / {version}')
     return sum(removed.values())
 

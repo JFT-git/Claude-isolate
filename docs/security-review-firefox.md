@@ -1,12 +1,23 @@
 # Firefox: reviewed Ubuntu advisory mismatch
 
-Reviewed 2026-10-02. Expires 2026-11-01; renewal requires a fresh review.
+Reviewed 2026-10-02; `157.0.1~build1` reviewed 2026-10-06.
+Expires 2026-11-01; renewal requires a fresh review.
 
 CI run [37016931439](https://github.com/JFT-git/Claude-isolate/actions/runs/37016931439)
 reported CVE-2022-25235 and CVE-2022-25236 for Mozilla's `firefox 157.0~build1`
 on both amd64 and arm64. Its proposed fix, `1:1snap1-0ubuntu1`, belongs to
 Ubuntu's transition to Snap. Comparing that Debian epoch to a Mozilla version
 incorrectly treats the current Mozilla package as older than the transition.
+
+CI run [37492539928](https://github.com/JFT-git/Claude-isolate/actions/runs/37492539928)
+resolved Mozilla's signed `157.0.1~build1` on 2026-10-06 for both architectures.
+The raw reports again contain only these two Firefox findings and propose the
+same Snap transition package. The original exact-version rule correctly blocked
+this unreviewed update. The fresh review retains the upstream assessment below:
+bug 1754724 records the fixes in Firefox 98/99 and bug 1764170 comment 8 confirms
+the ESR fixes shipped in 91.7. There is no evidence in these findings of a new
+157.0.1 regression; they match the existing OS-package version mismatch.
+The new review adds that one exact package version, with the same expiry.
 
 Mozilla's upstream investigation states that Firefox does not use the affected
 UTF-8 Expat mode for CVE-2022-25235, and its namespace separator avoids the
@@ -24,7 +35,8 @@ Primary evidence:
 ## Scope and audit trail
 
 `security/trivy-guest-reviewed.yaml` scopes the exceptions to the **exact PURL
-and version** `pkg:deb/ubuntu/firefox@157.0~build1`, and these two CVEs only.
+and versions** `pkg:deb/ubuntu/firefox@157.0~build1` and
+`pkg:deb/ubuntu/firefox@157.0.1~build1`, and these two CVEs only.
 It does not suppress libexpat, another Firefox version, other CVEs, or any other
 package. It is passed only to the guest release-gating scan, not source scans.
 The repositories use pinned signing-key fingerprints and Mozilla APT preferences.

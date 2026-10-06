@@ -18,7 +18,14 @@ def report(**overrides):
 class ReviewedFilterTests(unittest.TestCase):
     def test_exact_review_is_allowed_with_arch_qualifiers(self):
         for cve in ('CVE-2022-25235', 'CVE-2022-25236'):
-            self.assertEqual(verify(report(VulnerabilityID=cve), {'Results': []}, date(2026, 10, 2)), 1)
+            for version in ('157.0~build1', '157.0.1~build1'):
+                item = report(VulnerabilityID=cve, InstalledVersion=version,
+                              PkgIdentifier={'PURL': 'pkg:deb/ubuntu/firefox@' + version + '?arch=arm64&distro=ubuntu-24.04'})
+                self.assertEqual(verify(item, {'Results': []}, date(2026, 10, 6)), 1)
+
+    def test_known_purl_cannot_exempt_a_different_installed_version(self):
+        with self.assertRaises(ValueError):
+            verify(report(InstalledVersion='157.0.1~build1'), {'Results': []}, date(2026, 10, 6))
 
     def test_missing_purl_cannot_expand_native_trivy_exception(self):
         for identifier in ({}, {'PURL': ''}):
@@ -27,7 +34,8 @@ class ReviewedFilterTests(unittest.TestCase):
 
     def test_other_packages_versions_and_cves_stay_blocking(self):
         for changes in ({'PkgName': 'libexpat1'}, {'InstalledVersion': '158.0'},
-                        {'InstalledVersion': '91.0'}, {'VulnerabilityID': 'CVE-2026-12345'},
+                        {'InstalledVersion': '91.0'}, {'InstalledVersion': '157.0.2~build1'},
+                        {'VulnerabilityID': 'CVE-2026-12345'},
                         {'PkgIdentifier': {'PURL': 'pkg:deb/ubuntu/libexpat1@157.0~build1'}}):
             with self.assertRaises(ValueError):
                 verify(report(**changes), {'Results': []}, date(2026, 10, 2))
