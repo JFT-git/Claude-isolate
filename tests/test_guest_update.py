@@ -208,10 +208,12 @@ class GuestUpdateTests(unittest.TestCase):
             helper.mkdir()
             with patch.object(guest_update, 'image_command'), \
                  patch.object(backend, 'seed_iso'), \
+                 patch.object(backend, 'host_memory', return_value=(2048, 1024)), \
                  patch.object(guest_update, 'run_helper', side_effect=subprocess.TimeoutExpired('qemu', 1200)) as run:
                 with self.assertRaises(subprocess.TimeoutExpired):
                     guest_update.maintenance(cfg, base, helper, guest_update.payload(cfg))
             command = run.call_args.args[0]
+            self.assertEqual(command[command.index('-m') + 1], '768')
             self.assertEqual(command[command.index('-nic') + 1], 'none')
             self.assertNotIn('-virtfs', command)
             self.assertNotIn('-netdev', command)

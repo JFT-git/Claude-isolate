@@ -318,16 +318,60 @@ class WindowsBackendTests(unittest.TestCase):
                 self.assertEqual((resources['memory_mb'], resources['cpus']), expected)
                 self.assertLessEqual(resources['memory_mb'], available - 1024)
 
-    def test_low_free_memory_blocks_boot_and_manual_settings_are_preserved(self):
+    def test_low_free_memory_warns_and_manual_settings_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
             path, cfg = backend.config(Path(temporary))
             cfg.update(resources_mode='standard', memory_mb=6144, cpus=4)
-            with patch.object(backend, 'host_memory', return_value=(16384, 4000)):
-                with self.assertRaisesRegex(RuntimeError, 'Закройте'):
-                    backend.configure_resources(path, cfg)
-            with patch.object(backend, 'host_memory', return_value=(16384, 9000)):
+            with patch.object(backend, 'host_memory', return_value=(2048, 256)), \
+                 patch.object(backend, 'emit') as message:
                 backend.configure_resources(path, cfg)
+                self.assertTrue(message.call_args.kwargs['memory_warning'])
+                self.assertNotIn('error', message.call_args.kwargs)
+            self.assertEqual(environment.load_config(path)['memory_mb'], 6144)
+            with patch.object(backend, 'host_memory', return_value=(16384, 9000)), \
+                 patch.object(backend, 'emit') as message:
+                backend.configure_resources(path, cfg)
+                message.assert_not_called()
             self.assertEqual((cfg['memory_mb'], cfg['cpus']), (6144, 4))
+
+    def test_small_host_auto_profile_is_valid_and_reaches_launch(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(backend, 'host_memory', return_value=(2048, 768)), \
+             patch.object(backend, 'emit') as message, \
+             patch.object(backend, 'dependencies'), patch.object(backend, 'prepare'), \
+             patch.object(backend, 'start_environment') as launch, \
+             patch.object(sys, 'argv', ['core', 'start', '--data', temporary]):
+            backend.main()
+            launch.assert_called_once()
+            cfg = environment.load_config(Path(temporary) / 'environment.json')
+            self.assertEqual((cfg['memory_mb'], cfg['cpus']), (1024, 1))
+            with patch.object(environment.platform, 'system', return_value='Windows'):
+                plan = environment.command(cfg, check=False)
+            self.assertEqual(plan[plan.index('-m') + 1], '1024')
+            self.assertTrue(any(call.kwargs.get('memory_warning') for call in message.call_args_list))
+
+    def test_minimal_profile_is_selectable_and_kept_on_a_large_host(self):
+        with tempfile.TemporaryDirectory() as temporary, \
+             patch.object(sys, 'argv', ['core', 'minimal', '--data', temporary]), \
+             patch.object(backend, 'emit'):
+            backend.main()
+            path, cfg = backend.config(Path(temporary))
+            with patch.object(backend, 'host_memory', return_value=(16384, 12000)):
+                backend.configure_resources(path, cfg)
+            self.assertEqual((cfg['memory_mb'], cfg['cpus'], cfg['resources_mode']), (1024, 1, 'minimal'))
+
+    def test_low_memory_does_not_block_installer_guest_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            _, cfg = backend.config(Path(temporary))
+            Path(cfg['disk']).touch()
+            Path(cfg['seed']).touch()
+            with patch.object(backend, 'host_memory', return_value=(2048, 256)), \
+                 patch.object(backend, 'emit') as message, \
+                 patch.object(backend, 'dependencies'), patch.object(backend, 'prepare') as upgrade, \
+                 patch.object(sys, 'argv', ['core', 'upgrade', '--data', temporary]):
+                backend.main()
+            upgrade.assert_called_once()
+            self.assertTrue(message.call_args.kwargs['memory_warning'])
 
     def test_windows_tcg_uses_multiple_threads_and_explicit_bundled_firmware(self):
         with tempfile.TemporaryDirectory() as temporary:

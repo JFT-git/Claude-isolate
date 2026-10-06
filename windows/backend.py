@@ -19,9 +19,10 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.14'
+VERSION = '0.3.15'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
+RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
 
 
 def emit(message, **fields):
@@ -59,21 +60,33 @@ def host_memory():
 
 def automatic_resources():
     memory = host_memory()
-    # Reserve at least 1 GiB of currently available host memory. Do not
-    # allocate more than half the physical RAM or silently use host swap.
+    # Prefer leaving 1 GiB for Windows. Under memory pressure permit a small
+    # guest and warn; Windows/QEMU decide whether allocation can succeed.
     budget = min(3072, memory[0] // 2, memory[1] - 1024) if memory else 3072
-    allocated = max(2048, budget // 256 * 256)
-    return dict(memory_mb=allocated, cpus=min(2, max(1, (os.cpu_count() or 2) - 1)))
+    allocated = max(1024, budget // 256 * 256)
+    cpus = 1 if allocated < 2048 else min(2, max(1, (os.cpu_count() or 2) - 1))
+    return dict(memory_mb=allocated, cpus=cpus)
+
+
+def warn_memory(memory_mb, reserve=512, purpose='Linux'):
+    memory = host_memory()
+    if memory and memory[1] < memory_mb + reserve:
+        emit(f'Мало свободной памяти: {memory[1]} МБ, для {purpose} выделено {memory_mb} МБ. '
+             'Запуск разрешён; возможна медленная работа или ошибка выделения памяти Windows/QEMU.',
+             warning=True, memory_warning=True)
+
+
+def maintenance_memory():
+    memory = host_memory()
+    budget = memory[1] - 512 if memory else 1536
+    return max(768, min(1536, budget // 256 * 256))
 
 
 def configure_resources(path, cfg):
     if cfg.get('resources_mode') == 'auto':
         cfg.update(automatic_resources())
-    memory = host_memory()
     reserve = 1024 if cfg.get('resources_mode') == 'auto' else 512
-    if memory and memory[1] < cfg['memory_mb'] + reserve:
-        raise RuntimeError(f"Для Linux нужно {cfg['memory_mb']} МБ свободной памяти и "
-                           f'ещё {reserve} МБ для Windows. Закройте другие приложения и повторите запуск.')
+    warn_memory(cfg['memory_mb'], reserve)
     write_config(path, cfg)
 
 
@@ -274,7 +287,7 @@ def status(cfg, running=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version='Claude Isolate ' + VERSION)
-    parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'resources-auto', 'economy', 'standard',
+    parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'resources-auto', *RESOURCE_PROFILES,
                                          'accel-auto', 'accel-tcg', 'accel-whpx'])
     parser.add_argument('--data', type=Path, required=True)
     parser.add_argument('--log', type=Path, help='Installer update log (UTF-8)')
@@ -308,12 +321,12 @@ def main():
                 write_config(path, cfg)
                 emit('Режим запуска сохранён')
                 return
-            if args.action in ('resources-auto', 'economy', 'standard'):
+            if args.action == 'resources-auto' or args.action in RESOURCE_PROFILES:
                 if args.action == 'resources-auto':
                     cfg.update(automatic_resources(), resources_mode='auto')
                 else:
-                    cfg.update(memory_mb=3072 if args.action == 'economy' else 6144,
-                               cpus=2 if args.action == 'economy' else 4, resources_mode=args.action)
+                    memory_mb, cpus = RESOURCE_PROFILES[args.action]
+                    cfg.update(memory_mb=memory_mb, cpus=cpus, resources_mode=args.action)
                 write_config(path, cfg)
                 emit('Ресурсы сохранены')
                 return
@@ -323,9 +336,7 @@ def main():
             if args.action != 'upgrade':
                 configure_resources(path, cfg)
             else:
-                memory = host_memory()
-                if memory and memory[1] < 2048:
-                    raise RuntimeError('Для обновления образа освободите 2 ГБ памяти и повторите запуск приложения.')
+                warn_memory(maintenance_memory(), purpose='обновления образа')
             dependencies(data, cfg)
             prepare(data, cfg)
             if args.action == 'start':

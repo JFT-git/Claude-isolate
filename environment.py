@@ -118,7 +118,7 @@ def load_config(path):
         raise ValueError('Public browsing requires system VPN mode with public-address validation')
     if mode not in ('system', 'proxy'):
         raise ValueError('network_mode must be system or proxy')
-    fields = [('memory_mb', 2048, 65536), ('cpus', 1, 32)]
+    fields = [('memory_mb', 1024, 65536), ('cpus', 1, 32)]
     if mode == 'proxy':
         fields.append(('proxy_port', 1, 65535))
     for key, minimum, maximum in fields:

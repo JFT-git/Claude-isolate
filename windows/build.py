@@ -38,7 +38,7 @@ def smoke(folder, directory):
     if not (folder / '_internal/certifi/cacert.pem').is_file():
         raise RuntimeError('Installer is missing bundled TLS trust roots')
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
-    if 'Claude Isolate 0.3.14' not in result.stdout:
+    if 'Claude Isolate 0.3.15' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
     for executable in ('qemu/qemu-system-x86_64.exe', 'qemu/qemu-img.exe', 'GnuPG/bin/gpg.exe'):
         run([str(folder / 'runtime' / executable), '--version'], capture_output=True, env=env, timeout=30)
@@ -47,8 +47,11 @@ def smoke(folder, directory):
     run([str(folder / 'Claude Isolate.exe'), '--data', str(data), '--smoke-test', str(report)], env=env, timeout=60)
     if json.loads(report.read_text(encoding='utf-8')).get('gui') is not True:
         raise RuntimeError('GUI could not initialize on a clean Windows process')
+    run([str(core), 'minimal', '--data', str(data)], capture_output=True, env=env, timeout=30)
     plan = json.loads(run([str(core), 'plan', '--config', str(data / 'environment.json')],
                          capture_output=True, text=True, env=env, timeout=30).stdout)
+    if plan[plan.index('-m') + 1] != '1024' or plan[plan.index('-smp') + 1] != '1':
+        raise RuntimeError('Frozen worker rejected the minimal memory profile')
     net = plan[plan.index('-netdev') + 1]
     if 'guestfwd=' in net or 'restrict=on' not in net or 'virtserialport,chardev=gateway,name=claude.gateway' not in plan:
         raise RuntimeError('Frozen relay or QEMU network plan is incorrect')
@@ -86,7 +89,7 @@ def main():
     manifest = runtime.bundle(folder)
     print('Bundled runtime:', len(manifest['files']), 'files', flush=True)
     (folder / 'BUILD.json').write_text(json.dumps({
-        'version': '0.3.14', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
+        'version': '0.3.15', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
         'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
     }, indent=2), encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='Claude Isolate smoke ') as temporary:

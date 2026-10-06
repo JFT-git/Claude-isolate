@@ -15,6 +15,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
+# Guest payload revision is independent of controller-only releases.
 REVISION = '0.3.14'
 
 
@@ -199,7 +200,7 @@ def run_helper(command, cfg, log, ready):
 
 
 def maintenance(cfg, base, directory, content):
-    from windows.backend import seed_iso
+    from windows.backend import seed_iso, maintenance_memory
     nonce = uuid.uuid4().hex
     marker = 'CLAUDE-ISOLATION: offline-update-complete ' + nonce
     ready = 'CLAUDE-ISOLATION: maintenance-awaiting-disk ' + nonce
@@ -231,7 +232,7 @@ def maintenance(cfg, base, directory, content):
     seed_iso(seed_files, seed)
     image_command(cfg, 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(base.resolve()), str(helper))
     command = [cfg['qemu_executable'], '-nodefaults', '-machine', 'q35',
-               '-accel', 'tcg,thread=multi', '-cpu', 'max', '-m', '1536', '-smp', '2',
+               '-accel', 'tcg,thread=multi', '-cpu', 'max', '-m', str(maintenance_memory()), '-smp', '2',
                '-display', 'none', '-monitor', 'none', '-serial', 'file:' + environment.qemu_path(log),
                '-nic', 'none', '-no-reboot',
                '-qmp', 'stdio', '-device', 'pcie-root-port,id=update-port,chassis=1,slot=1',

@@ -338,6 +338,8 @@ def run_guest(core, path, cfg, report, desktop):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--desktop', action='store_true', help='Verify complete automatic desktop installation')
+    parser.add_argument('--memory-mb', type=int, choices=(1024, 2048, 3072),
+                        help='Guest RAM for the real packaged boot test')
     args = parser.parse_args()
     if os.name != 'nt':
         raise SystemExit('Run this integration test on Windows.')
@@ -353,8 +355,10 @@ def main():
         os.environ['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
-        cfg.update(qemu_executable=str(executable), accelerator='tcg',
-                   memory_mb=3072 if args.desktop else 2048, resources_mode='economy')
+        memory_mb = args.memory_mb or (3072 if args.desktop else 2048)
+        cfg.update(qemu_executable=str(executable), accelerator='tcg', memory_mb=memory_mb,
+                   cpus=1 if memory_mb == 1024 else 2,
+                   resources_mode='minimal' if memory_mb == 1024 else 'economy')
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
         # Use the actual packaged first-run setup, including GPG, qemu-img,
@@ -435,6 +439,7 @@ def main():
         for file in evidence.iterdir():
             shutil.copy2(file, report / file.name)
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
+                  'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus'],
                   'guest_display': 'gtk', 'bundled_runtime': True, 'external_tools_removed_from_path': True, 'automatic_desktop_verified': args.desktop,
                   'boot_cycles': len(boots), 'gateway_after_reboot_verified': len(boots) == 2,
                   'installer_existing_guest_upgrade_verified': args.desktop,

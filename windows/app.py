@@ -37,8 +37,8 @@ class Application:
         self.last_error = None
         self.messages = queue.Queue()
         root.title('Claude Isolate')
-        root.geometry('700x470')
-        root.minsize(620, 450)
+        root.geometry('700x530')
+        root.minsize(620, 510)
         root.option_add('*Font', '{Segoe UI} 10')
         style = ttk.Style(root)
         if 'vista' in style.theme_names():
@@ -65,11 +65,17 @@ class Application:
         resources.pack(fill='x', pady=(18, 8))
         ttk.Label(resources, text='Ресурсы:').pack(side='left')
         self.resources = ttk.Combobox(resources, state='readonly', width=30,
-                                      values=['Автоматически: по памяти ПК', 'Экономно: 3 ГБ / 2 CPU', 'Стандартно: 6 ГБ / 4 CPU'])
+                                      values=['Автоматически: по памяти ПК', 'Минимально: 1 ГБ / 1 CPU',
+                                              'Экономно: 3 ГБ / 2 CPU', 'Стандартно: 6 ГБ / 4 CPU'])
         self.resources.pack(side='left', padx=8)
         _, cfg = backend.config(data)
-        self.resources.current(0 if cfg.get('resources_mode') == 'auto' else 1 if cfg['memory_mb'] <= 3072 else 2)
+        mode = cfg.get('resources_mode')
+        index = {'auto': 0, 'minimal': 1, 'economy': 2, 'standard': 3}.get(mode)
+        self.resources.current(index if index is not None else
+                               1 if cfg['memory_mb'] <= 1024 else 2 if cfg['memory_mb'] <= 3072 else 3)
         self.resources.bind('<<ComboboxSelected>>', self.set_resources)
+        self.memory_note = tk.StringVar(value='')
+        ttk.Label(frame, textvariable=self.memory_note, wraplength=640).pack(anchor='w')
         acceleration = ttk.Frame(frame)
         acceleration.pack(fill='x', pady=(4, 8))
         ttk.Label(acceleration, text='Запуск:').pack(side='left')
@@ -103,6 +109,7 @@ class Application:
             return
         self.vm_started = False
         self.last_error = None
+        self.memory_note.set('')
         self.job = Job()
         try:
             self.task = subprocess.Popen(worker_command(action, self.data) + ['--start-gate'],
@@ -132,7 +139,7 @@ class Application:
 
     def set_resources(self, event=None):
         try:
-            self.launch(('resources-auto', 'economy', 'standard')[self.resources.current()])
+            self.launch(('resources-auto', 'minimal', 'economy', 'standard')[self.resources.current()])
         except (OSError, RuntimeError) as error:
             self.message.set(str(error))
 
@@ -198,6 +205,8 @@ class Application:
             elif value.get('running') is False:
                 self.vm_started = False
             if value.get('message'):
+                if value.get('memory_warning'):
+                    self.memory_note.set(value['message'])
                 self.message.set(value['message'])
                 if value.get('error'):
                     self.last_error = value['message']

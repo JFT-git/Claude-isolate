@@ -30,10 +30,12 @@ Synthetic VPN DNS answers in 198.18.0.0/15 are resolved to real public addresses
 using certificate-verified Cloudflare DNS-over-HTTPS over the host's routing.
 Local addresses remain blocked. If secure DNS cannot be reached, access stays
 closed and the controller displays the DNS error.
-Automatic resources allocate 2-3 GB RAM and up to 2 virtual CPUs, keeping
-memory available for Windows. The host needs at least 4 GB RAM; 8 GB or more
-is recommended. Close other applications if available memory is insufficient.
-Manual economy (3 GB/2 CPUs) and standard (6 GB/4 CPUs) profiles are optional.
+Automatic resources allocate 1-3 GB RAM and up to 2 virtual CPUs, trying to keep
+memory available for Windows. 8 GB or more host RAM is recommended.
+Low available memory shows a warning without blocking launch or guest updates.
+Windows/QEMU can still refuse allocation or run slowly under memory pressure.
+Manual minimal (1 GB/1 CPU), economy (3 GB/2 CPUs), and standard (6 GB/4 CPUs)
+profiles are optional. Manual resource settings are preserved.
 The launcher uses existing WHPX acceleration when available, otherwise software
 emulation automatically. No Windows features are enabled or security settings
 changed. Software emulation is slower, especially during first installation.
