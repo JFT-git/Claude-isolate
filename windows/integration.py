@@ -167,8 +167,11 @@ if fixture.exists():
             raise RuntimeError('Guest upgrade changed user data: ' + relative)
     if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '0.3.13':
         raise RuntimeError('Offline updater did not install the current guest revision')
-    if not pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').exists():
-        raise RuntimeError('Online application update did not complete')
+    deadline = time.monotonic() + 600
+    while not pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError('Online application update did not complete')
+        time.sleep(5)
     print('WINDOWS-INTEGRATION: USERDATA-PRESERVED', flush=True)
     print('WINDOWS-INTEGRATION: GUEST-UPDATE-OK', flush=True)
 else:

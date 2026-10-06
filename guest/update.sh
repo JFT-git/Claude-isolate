@@ -11,7 +11,8 @@ if [ "${1:-}" != '--installed' ]; then
     nft -f /etc/claude-isolation.nft
     CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
     apt-get -o DPkg::Lock::Timeout=180 update
-    apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends \
+    apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef \
+        -o Dpkg::Options::=--force-confold install -y --no-install-recommends \
         claude-desktop firefox openssh-client nftables curl ca-certificates
     apt-get clean
 fi
