@@ -33,8 +33,10 @@ def smoke(folder, directory):
     env.pop('PYTHONPATH', None)
     env.pop('PYTHONUTF8', None)
     core = folder / 'Claude Isolate Core.exe'
+    if not (folder / '_internal/certifi/cacert.pem').is_file():
+        raise RuntimeError('Installer is missing bundled TLS trust roots')
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
-    if 'Claude Isolate 0.3.11' not in result.stdout:
+    if 'Claude Isolate 0.3.12' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
     report = directory / 'gui.json'
     data = directory / 'private data Тест'
@@ -58,7 +60,7 @@ def smoke(folder, directory):
 def licenses(folder):
     target = folder / 'licenses'
     target.mkdir()
-    for package in ('pycdlib', 'pyinstaller', 'paramiko', 'cryptography', 'bcrypt', 'pynacl', 'cffi', 'invoke'):
+    for package in ('pycdlib', 'pyinstaller', 'paramiko', 'cryptography', 'bcrypt', 'pynacl', 'cffi', 'invoke', 'certifi'):
         distribution = importlib.metadata.distribution(package)
         for path in distribution.files or []:
             if 'license' in Path(path).name.lower() and path.locate().is_file():
@@ -78,7 +80,7 @@ def main():
     shutil.copy2(ROOT / 'windows/README.txt', folder / 'README.txt')
     licenses(folder)
     (folder / 'BUILD.json').write_text(json.dumps({
-        'version': '0.3.11', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
+        'version': '0.3.12', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
         'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
     }, indent=2), encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='Claude Isolate smoke ') as temporary:

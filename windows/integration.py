@@ -225,7 +225,19 @@ def run_guest(core, path, cfg, report, desktop):
             history = report / 'network-events.jsonl'
             history.write_text('', encoding='utf-8')
             previous = None
+            desktop_control_checked = False
             while process.poll() is None:
+                if desktop and not desktop_control_checked:
+                    boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
+                    if 'CLAUDE-ISOLATION: desktop-ready' in boot:
+                        control = backend.qmp(cfg, 'query-status')
+                        if not control.get('running'):
+                            raise RuntimeError('Graphical desktop stopped responding to QMP')
+                        pointers = backend.qmp(cfg, 'query-mice')
+                        if not any(pointer.get('absolute') and pointer.get('current') for pointer in pointers):
+                            raise RuntimeError('Desktop has no active absolute pointer')
+                        (report / 'desktop-qmp.json').write_text(json.dumps({'status': control, 'mice': pointers}), encoding='utf-8')
+                        desktop_control_checked = True
                 try:
                     state = network_guard.read_state(cfg['network_status'])
                     state['permission_current'] = network_guard.permitted(cfg['network_status'])
@@ -243,6 +255,8 @@ def run_guest(core, path, cfg, report, desktop):
                     pass
             if process.returncode:
                 raise RuntimeError('Packaged launcher failed during guest boot')
+            if desktop and not desktop_control_checked:
+                raise RuntimeError('Post-desktop control and absolute pointer were not verified')
     finally:
         # Preserve final state as well as the transitions collected above.
         try:
@@ -293,7 +307,7 @@ def main():
         os.environ['PATH'] = str(executable.parent) + os.pathsep + os.environ['PATH']
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
-        cfg.update(qemu_executable=str(executable), accelerator='tcg', display='sdl',
+        cfg.update(qemu_executable=str(executable), accelerator='tcg',
                    memory_mb=3072 if args.desktop else 2048)
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'

@@ -15,7 +15,7 @@ def build(output, arch):
     runtime = contents / 'Resources/runtime'
     (contents / 'MacOS').mkdir(parents=True, exist_ok=True)
     runtime.mkdir(parents=True, exist_ok=True)
-    for name in ['environment.py', 'network_guard.py', 'network_transport.py', 'route_guard.py', 'ubuntu_image.py', 'session_lock.py',
+    for name in ['environment.py', 'network_guard.py', 'network_transport.py', 'tls_trust.py', 'route_guard.py', 'ubuntu_image.py', 'session_lock.py',
                  'environment.example.json', 'guest', 'macos']:
         source, target = root / name, runtime / name
         if source.is_dir():

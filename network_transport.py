@@ -7,6 +7,7 @@ import socket
 import ssl
 import time
 from urllib.parse import urlencode
+from tls_trust import client_context
 
 
 FAKE_IP_RANGE = ipaddress.ip_network('198.18.0.0/15')
@@ -72,8 +73,7 @@ def _doh_addresses(host, port, deadline):
                      for ip in DOH_BOOTSTRAP]
         raw = _connect(addresses, deadline)
         try:
-            context = ssl.create_default_context()
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context = client_context()
             raw.settimeout(_remaining(deadline))
             conn.sock = context.wrap_socket(raw, server_hostname=DOH_HOST)
         except BaseException:

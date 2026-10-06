@@ -146,6 +146,9 @@ def qemu_path(p):
 def command(cfg, check=True):
     arch = cfg['arch']
     system = platform.system()
+    display = cfg.get('display', 'gtk') if system == 'Windows' else None
+    if system == 'Windows' and display not in ('gtk', 'sdl', 'none'):
+        raise ValueError('Unsupported Windows display')
     native = (platform.machine().lower() in ('arm64', 'aarch64')) == (arch == 'aarch64')
     accel = ('hvf' if system == 'Darwin' else 'kvm' if system == 'Linux'
              else 'whpx') if native else 'tcg'
@@ -183,20 +186,16 @@ def command(cfg, check=True):
            '-netdev', net, '-device', 'virtio-net-pci,netdev=isolated',
            '-device', 'virtio-gpu-pci,edid=off,xres=1920,yres=1200',
            '-device', 'qemu-xhci', '-device', 'usb-kbd',
-           # Activating an absolute tablet from a Windows vCPU calls SDL's
-           # mouse-mode notifier and can deadlock User32 against the main
-           # loop. A relative mouse avoids that cross-thread mode transition.
-           '-device', 'usb-mouse' if system == 'Windows' else 'usb-tablet',
+           # RDP delivers absolute coordinates; SDL's relative mouse warp
+           # does not work there. GTK avoids SDL's cross-thread transition.
+           '-device', 'usb-mouse' if display == 'sdl' else 'usb-tablet',
            '-monitor', 'none', '-serial', 'none']
     if system == 'Darwin':
         cmd += ['-display', 'cocoa,zoom-to-fit=on,zoom-interpolation=on,full-screen=on']
         if cfg.get('qemu_data_dir'):
             cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
     elif system == 'Windows':
-        display = cfg.get('display', 'sdl')
-        if display not in ('sdl', 'none'):
-            raise ValueError('Unsupported Windows display')
-        cmd += ['-display', display]
+        cmd += ['-display', 'gtk,gl=off,zoom-to-fit=on' if display == 'gtk' else display]
         import uuid
         pipe = cfg.setdefault('qmp_pipe', 'claude-isolate-' + uuid.uuid4().hex)
         if not re.fullmatch(r'claude-isolate-[0-9a-f]{32}', pipe):

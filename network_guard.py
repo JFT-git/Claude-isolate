@@ -12,6 +12,7 @@ import tempfile
 import time
 import threading
 from network_transport import open_public, public_address
+from tls_trust import client_context
 
 LEASE_SECONDS = 6
 CHECK_INTERVAL = 2
@@ -68,8 +69,7 @@ def probe(port=None, mode='proxy'):
             conn.connect()
         else:
             conn.sock = open_public(host, 443, timeout=3)
-        context = ssl.create_default_context()
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context = client_context()
         conn.sock = context.wrap_socket(conn.sock, server_hostname=host)
         headers = {'Accept': 'application/json' if token else 'text/plain',
                    'Cache-Control': 'no-cache', 'Connection': 'close',

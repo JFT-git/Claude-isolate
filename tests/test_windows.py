@@ -321,8 +321,9 @@ class WindowsBackendTests(unittest.TestCase):
             self.assertIn('restrict=on', net)
             self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
             self.assertIn('virtio-gpu-pci,edid=off,xres=1920,yres=1200', cmd)
-            self.assertIn('usb-mouse', cmd)
-            self.assertNotIn('usb-tablet', cmd)
+            self.assertIn('usb-tablet', cmd)
+            self.assertNotIn('usb-mouse', cmd)
+            self.assertEqual(cmd[cmd.index('-display') + 1], 'gtk,gl=off,zoom-to-fit=on')
             self.assertIn('pipe:' + cfg['qmp_pipe'], cmd)
             self.assertFalse(any('tcp:' in c for c in cmd if c.startswith('pipe:')))
 

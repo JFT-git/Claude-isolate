@@ -17,7 +17,7 @@ from network_guard import read_state, write_state
 from session_lock import exclusive
 from windows.pipe import NamedPipe
 
-COMMANDS = ('query-status', 'system_powerdown')
+COMMANDS = ('query-status', 'query-mice', 'system_powerdown')
 
 
 def paths(cfg):
