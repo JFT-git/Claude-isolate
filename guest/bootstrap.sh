@@ -140,7 +140,6 @@ install -d /etc/systemd/journald.conf.d
 printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/50-isolated.conf
 systemctl restart systemd-journald
 fstrim -av || true
-touch /var/lib/claude-isolation-ready
 if [ -x /usr/local/sbin/claude-environment-update ]; then
   /usr/local/sbin/claude-environment-update --installed
 fi
@@ -148,4 +147,8 @@ systemctl unmask lightdm.service
 systemctl enable lightdm
 systemctl restart lightdm
 touch /etc/cloud/cloud-init.disabled
+# Publish completion only after all persistent boot settings are installed
+# and the display manager has started. A retry can outlive cloud-init's first
+# systemctl job; consumers must never see an intermediate ready marker.
+touch /var/lib/claude-isolation-ready
 systemctl enable --now claude-desktop-ready.service

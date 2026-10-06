@@ -15,7 +15,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
-REVISION = '0.3.13'
+REVISION = '0.3.14'
 
 
 def guest_files(root):

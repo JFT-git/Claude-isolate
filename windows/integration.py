@@ -125,7 +125,7 @@ bulk_https()
 '''.replace('@BULK_PATH@', gnupg.URL.split('gnupg.org', 1)[1]).replace('@BULK_HASH@', gnupg.SHA256)
 
 DESKTOP_PROBE = '''import pathlib, subprocess, time
-deadline = time.monotonic() + 1200
+deadline = time.monotonic() + 1800
 while not pathlib.Path('/var/lib/claude-isolation-ready').is_file():
     # Production setup retries transient outages automatically. Do not shut
     # down its VM just because the first systemd start job had to retry.
@@ -165,10 +165,10 @@ if fixture.exists():
         actual = hashlib.sha256((home / relative).read_bytes()).hexdigest()
         if actual != expected:
             raise RuntimeError('Guest upgrade changed user data: ' + relative)
-    if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '0.3.13':
+    if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '0.3.14':
         raise RuntimeError('Offline updater did not install the current guest revision')
     deadline = time.monotonic() + 600
-    while not pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').exists():
+    while not pathlib.Path('/var/lib/claude-isolate/updated-0.3.14').exists():
         if time.monotonic() >= deadline:
             raise RuntimeError('Online application update did not complete')
         time.sleep(5)
@@ -191,7 +191,7 @@ else:
     pathlib.Path('/etc/systemd/system/claude-gateway.service').unlink()
     pathlib.Path('/usr/local/sbin/claude-environment-update').unlink()
     pathlib.Path('/etc/claude-isolate/revision').write_text('0.3.12\\n')
-    pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').unlink(missing_ok=True)
+    pathlib.Path('/var/lib/claude-isolate/updated-0.3.14').unlink(missing_ok=True)
     print('WINDOWS-INTEGRATION: LEGACY-GUEST-PREPARED', flush=True)
 '''
 
@@ -213,7 +213,7 @@ def install_guest_update(directory, data, report):
         if (data / name).exists():
             shutil.copy2(data / name, report / name)
     updated = environment.load_config(path)
-    if updated.get('guest_revision') != '0.3.13' or not updated.get('guest_update_snapshot'):
+    if updated.get('guest_revision') != '0.3.14' or not updated.get('guest_update_snapshot'):
         print((data / 'installer-update.log').read_text(encoding='utf-8', errors='replace')[-12000:])
         raise RuntimeError('The installer did not update the old Linux image')
     if updated['disk'] != disk or updated['seed'] != seed:
@@ -266,7 +266,7 @@ def run_guest(core, path, cfg, report, desktop):
                 if not control.get('running'):
                     raise RuntimeError('Windows control owner lost the running VM')
             (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
-            boot_timeout = 1500 if desktop else 420
+            boot_timeout = 2100 if desktop else 420
             deadline = time.monotonic() + boot_timeout
             history = report / 'network-events.jsonl'
             history.write_text('', encoding='utf-8')
@@ -378,6 +378,17 @@ def main():
             # Keep the production first-run setup; only add account-free
             # assertions and shutdown AFTER it finishes automatically.
             cloud_data = json.loads(environment.cloud_config(cfg).split('\n', 1)[1])
+            # Start setup asynchronously so readiness is tested concurrently
+            # with bootstrap, including the state after a failed/retried apt
+            # download. Waiting for the first systemctl job hid this race.
+            commands = []
+            for command in cloud_data['runcmd']:
+                if command == ['systemctl', 'enable', '--now', 'claude-setup.service']:
+                    commands += [['systemctl', 'enable', 'claude-setup.service'],
+                                 ['systemctl', '--no-block', 'start', 'claude-setup.service']]
+                else:
+                    commands.append(command)
+            cloud_data['runcmd'] = commands
             cloud_data['write_files'].append({'path': '/ci-probe.py',
                                              'content': DESKTOP_PROBE + PROBE + UPGRADE_PROBE, 'permissions': '0600'})
             cloud_data['write_files'].append({'path': '/etc/systemd/system/ci-reboot-probe.service',
