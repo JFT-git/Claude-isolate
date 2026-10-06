@@ -287,6 +287,7 @@ packaging\check-windows.cmd
   Все релизы пока помечаются prerelease; ZIP сопровождаются SHA256.
 
 ```sh
+python3 -m pip install --require-hashes -r requirements-test.txt
 python3 -m unittest discover -s tests -v
 python3 -m venv .venv
 .venv/bin/pip install --require-hashes -r requirements-security.txt

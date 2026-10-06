@@ -1,0 +1,4 @@
+# The ISO round-trip tests run on every OS; runtime/build dependencies remain separate.
+pycdlib==1.21.0 \
+    --hash=sha256:1a82cd735542921d0dd7bc40381e7b7b9cbc70bd4c03e4f67a0531d59d2f518e \
+    --hash=sha256:a5758ad00f0e1bbd60dc5a579a50259bff2e267e8e925d485351bf2bc683a329
