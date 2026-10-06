@@ -19,7 +19,7 @@ import ubuntu_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.12'
+VERSION = '0.3.13'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 
@@ -33,6 +33,8 @@ def write_config(path, cfg):
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as output:
             json.dump(cfg, output, ensure_ascii=False, indent=2)
+            output.flush()
+            os.fsync(output.fileno())
         os.replace(temporary, path)
     finally:
         Path(temporary).unlink(missing_ok=True)
@@ -208,27 +210,8 @@ def start_environment(path, cfg):
 def prepare(data, cfg):
     disk, seed = Path(cfg['disk']), Path(cfg['seed'])
     if disk.is_file() and seed.is_file():
-        if cfg.get('guest_gateway_version') == GUEST_GATEWAY_VERSION:
-            return
-        # Old installed guests disabled cloud-init before persisting the
-        # serial gateway. Replacing their seed cannot repair that root disk.
-        # Prepare a separate corrected guest and keep the old disk/seed and
-        # configuration intact. Never silently erase files or copy logins.
-        replacement = dict(cfg, disk=str(data / f'desktop-gateway-v{GUEST_GATEWAY_VERSION}.qcow2'),
-                           seed=str(data / f'seed-gateway-v{GUEST_GATEWAY_VERSION}.iso'),
-                           guest_gateway_version=GUEST_GATEWAY_VERSION)
-        write_config(data / f'environment-before-gateway-v{GUEST_GATEWAY_VERSION}-upgrade.json', cfg)
-        original_backup = data / 'environment-before-gateway-upgrade.json'
-        if not original_backup.exists():
-            write_config(original_backup, cfg)
-        emit('Обновляю Linux для исправления сети после перезапуска. Старый диск сохранён; аккаунты не копируются.')
-        if not (Path(replacement['disk']).is_file() and Path(replacement['seed']).is_file()):
-            base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))
-            environment.prepare(replacement, base, digest)
-            base.unlink(missing_ok=True)
-        write_config(data / 'environment.json', replacement)
-        cfg.update(replacement)
-        emit('Исправленная среда подготовлена. Приложения установятся автоматически.')
+        from windows.guest_update import upgrade
+        upgrade(data, cfg)
         return
     if disk.exists() or seed.exists():
         raise RuntimeError('Найдена неполная среда. Существующий диск автоматически не перезаписывается.')
@@ -236,7 +219,10 @@ def prepare(data, cfg):
     base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))
     emit('Создание отдельного диска Linux…')
     environment.prepare(cfg, base, digest)
-    base.unlink(missing_ok=True)
+    # Retain the signed base as a maintenance cache for future guest updates.
+    from windows.guest_update import REVISION
+    cfg.update(guest_revision=REVISION, guest_gateway_version=GUEST_GATEWAY_VERSION)
+    write_config(data / 'environment.json', cfg)
     emit('Среда подготовлена. При первой загрузке Linux установит рабочий стол и приложения.')
 
 
@@ -267,6 +253,8 @@ def status(cfg, running=False):
                         else 'Linux запускается и устанавливает компоненты…')
     if 'CLAUDE-ISOLATION: FAILURE' in boot:
         state['message'] = 'Установка не завершена — проверьте журнал'
+    if plain_boot.rfind('CLAUDE-ISOLATION: update-started') > plain_boot.rfind('CLAUDE-ISOLATION: environment-updated'):
+        state['message'] = 'Обновляю Claude и Firefox; при недоступной сети обновление повторится…'
     try:
         network = network_guard.read_state(cfg['network_status'])
         network['allowed'] = network_guard.permitted(cfg['network_status'])
@@ -284,15 +272,24 @@ def status(cfg, running=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version='Claude Isolate ' + VERSION)
-    parser.add_argument('action', choices=['prepare', 'start', 'stop', 'resources-auto', 'economy', 'standard',
+    parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'resources-auto', 'economy', 'standard',
                                          'accel-auto', 'accel-tcg', 'accel-whpx'])
     parser.add_argument('--data', type=Path, required=True)
+    parser.add_argument('--log', type=Path, help='Installer update log (UTF-8)')
     parser.add_argument('--start-gate', action='store_true')
     args = parser.parse_args()
+    if args.log:
+        args.log.parent.mkdir(parents=True, exist_ok=True)
+        sys.stdout = sys.stderr = args.log.open('a', encoding='utf-8', buffering=1)
     try:
         if args.start_gate and sys.stdin.readline().strip() != 'GO':
             raise RuntimeError('Запуск отменён контроллером')
         data = args.data.resolve()
+        # Installing the controller for the first time must not download or
+        # create a guest; only an existing environment needs installer updates.
+        if args.action == 'upgrade' and not (data / 'environment.json').exists():
+            emit('Существующей среды нет. Linux установится при первом запуске.')
+            return
         data.mkdir(parents=True, exist_ok=True)
         if args.action == 'stop':
             _, cfg = config(data)
@@ -318,7 +315,15 @@ def main():
                 write_config(path, cfg)
                 emit('Ресурсы сохранены')
                 return
-            configure_resources(path, cfg)
+            if args.action == 'upgrade' and not Path(cfg['disk']).exists() and not Path(cfg['seed']).exists():
+                emit('Существующего образа нет. Linux установится при первом запуске.')
+                return
+            if args.action != 'upgrade':
+                configure_resources(path, cfg)
+            else:
+                memory = host_memory()
+                if memory and memory[1] < 2048:
+                    raise RuntimeError('Для обновления образа освободите 2 ГБ памяти и повторите запуск приложения.')
             dependencies(data, cfg)
             prepare(data, cfg)
             if args.action == 'start':

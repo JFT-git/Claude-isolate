@@ -15,80 +15,20 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
-    def test_second_guest_upgrade_preserves_previous_image_and_original_backup(self):
+    def test_prepare_routes_existing_guest_to_in_place_upgrade(self):
+        from windows import guest_update
         with tempfile.TemporaryDirectory() as temporary:
             data = Path(temporary)
-            path, cfg = backend.config(data)
-            cfg.update(guest_gateway_version=1, disk=str(data / 'desktop-gateway-v1.qcow2'),
-                       seed=str(data / 'seed-gateway-v1.iso'))
-            backend.write_config(path, cfg)
-            old_disk, old_seed = Path(cfg['disk']), Path(cfg['seed'])
-            old_disk.write_bytes(b'previous-corrected-disk')
-            old_seed.write_bytes(b'previous-corrected-seed')
-            original_backup = data / 'environment-before-gateway-upgrade.json'
-            original_backup.write_bytes(b'original-configuration-preserved')
-            base = data / 'base.img'
-            base.touch()
-            def prepare(replacement, image, digest):
-                Path(replacement['disk']).write_bytes(b'updated-disk')
-                Path(replacement['seed']).write_bytes(b'updated-seed')
-            with patch.object(backend, 'emit'), patch.object(backend, 'find_tool', return_value='gpg'), \
-                 patch.object(backend.ubuntu_image, 'download', return_value=(base, 'digest')), \
-                 patch.object(backend.environment, 'prepare', side_effect=prepare) as build:
-                backend.prepare(data, cfg)
-                backend.prepare(data, cfg)
-                build.assert_called_once()
-            self.assertEqual(old_disk.read_bytes(), b'previous-corrected-disk')
-            self.assertEqual(old_seed.read_bytes(), b'previous-corrected-seed')
-            self.assertEqual(original_backup.read_bytes(), b'original-configuration-preserved')
-            self.assertEqual(Path(cfg['disk']).name, 'desktop-gateway-v2.qcow2')
-            backup = environment.load_config(data / 'environment-before-gateway-v2-upgrade.json')
-            self.assertEqual(Path(backup['disk']), old_disk)
-
-    def test_legacy_guest_upgrade_preserves_old_disks_and_does_not_repeat(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary)
-            path, cfg = backend.config(data)
-            cfg.pop('guest_gateway_version')
-            backend.write_config(path, cfg)
-            old_disk, old_seed = Path(cfg['disk']), Path(cfg['seed'])
-            old_disk.write_bytes(b'previous-user-disk')
-            old_seed.write_bytes(b'previous-seed')
-            base = data / 'base.img'
-            base.touch()
-            def prepare(replacement, image, digest):
-                Path(replacement['disk']).write_bytes(b'new-disk')
-                Path(replacement['seed']).write_bytes(b'new-seed')
-            with patch.object(backend, 'emit'), patch.object(backend, 'find_tool', return_value='gpg'), \
-                 patch.object(backend.ubuntu_image, 'download', return_value=(base, 'digest')) as download, \
-                 patch.object(backend.environment, 'prepare', side_effect=prepare) as build:
-                backend.prepare(data, cfg)
-                backend.prepare(data, cfg)
-                download.assert_called_once()
-                build.assert_called_once()
-            self.assertEqual(old_disk.read_bytes(), b'previous-user-disk')
-            self.assertEqual(old_seed.read_bytes(), b'previous-seed')
-            self.assertEqual(environment.load_config(path), cfg)
-            self.assertNotEqual(Path(cfg['disk']), old_disk)
-            backup = environment.load_config(data / 'environment-before-gateway-upgrade.json')
-            self.assertEqual(Path(backup['disk']), old_disk)
-
-    def test_failed_guest_upgrade_keeps_existing_configuration_and_files(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            data = Path(temporary)
-            path, cfg = backend.config(data)
-            cfg.pop('guest_gateway_version')
-            backend.write_config(path, cfg)
-            original = dict(cfg)
-            Path(cfg['disk']).write_bytes(b'old-disk')
+            _, cfg = backend.config(data)
+            Path(cfg['disk']).write_bytes(b'user-disk')
             Path(cfg['seed']).write_bytes(b'old-seed')
-            with patch.object(backend, 'emit'), patch.object(backend, 'find_tool', return_value='gpg'), \
-                 patch.object(backend.ubuntu_image, 'download', side_effect=OSError('Offline')):
-                with self.assertRaises(OSError):
-                    backend.prepare(data, cfg)
-            self.assertEqual(cfg, original)
-            self.assertEqual(environment.load_config(path), original)
-            self.assertEqual(Path(cfg['disk']).read_bytes(), b'old-disk')
+            with patch.object(guest_update, 'upgrade') as upgrade, \
+                 patch.object(environment, 'prepare') as fresh:
+                backend.prepare(data, cfg)
+            upgrade.assert_called_once_with(data, cfg)
+            fresh.assert_not_called()
+            self.assertEqual(Path(cfg['disk']).read_bytes(), b'user-disk')
+            self.assertEqual(Path(cfg['seed']).read_bytes(), b'old-seed')
 
     def test_gateway_boot_command_installs_independent_enabled_service(self):
         from windows.serial_gateway import boot_command

@@ -14,7 +14,7 @@ import time
 from windows.pipe import gateway_pipe
 
 
-def boot_command(root):
+def guest_files(root):
     stream = (root / 'guest/serial-stream.py').read_text(encoding='utf-8')
     stream_path = '/usr/local/lib/claude-isolate/serial-stream.py'
     proxy = shlex.join(['/usr/bin/python3', stream_path])
@@ -29,11 +29,18 @@ def boot_command(root):
                'ExecStartPre=/usr/sbin/ip address replace 10.0.2.100/32 dev lo\n'
                'ExecStart=' + shlex.join(command) + '\nRestart=always\nRestartSec=1\n'
                '[Install]\nWantedBy=multi-user.target\n')
+    return [dict(path=stream_path, content=stream, permissions='0700'),
+            dict(path='/etc/systemd/system/claude-gateway.service', content=service, permissions='0644')]
+
+
+def boot_command(root):
+    stream, service = guest_files(root)
+    stream_path = stream['path']
     # A cloud-init background process disappears on reboot, and production
     # disables cloud-init after setup. Persist an independently enabled unit.
     return ['sh', '-c', 'set -eu; install -d -m 700 /usr/local/lib/claude-isolate; '
-            'printf %s ' + shlex.quote(stream) + ' > ' + stream_path + '; '
-            'chmod 700 ' + stream_path + '; printf %s ' + shlex.quote(service) +
+            'printf %s ' + shlex.quote(stream['content']) + ' > ' + stream_path + '; '
+            'chmod 700 ' + stream_path + '; printf %s ' + shlex.quote(service['content']) +
             ' > /etc/systemd/system/claude-gateway.service; '
             'systemctl daemon-reload; systemctl enable claude-gateway.service; '
             # bootcmd runs before basic.target. Waiting here for a regular

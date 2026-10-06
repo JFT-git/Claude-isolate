@@ -1,0 +1,181 @@
+"""Transactional, offline updates of an existing qcow2 guest, with no guest NIC."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import uuid
+
+import environment
+import ubuntu_image
+from session_lock import exclusive
+from windows.serial_gateway import guest_files as gateway_files
+
+REVISION = '0.3.13'
+
+
+def guest_files(root):
+    marker = '/var/lib/claude-isolate/updated-' + REVISION
+    service = ('[Unit]\nDescription=Update isolated desktop components\n'
+               'Wants=network-online.target claude-gateway.service\n'
+               'After=network-online.target claude-gateway.service nftables.service\n'
+               'Before=lightdm.service claude-desktop-ready.service\n'
+               'ConditionPathExists=/var/lib/claude-isolation-ready\n'
+               'ConditionPathExists=!' + marker + '\nStartLimitIntervalSec=0\n'
+               '[Service]\nType=oneshot\nExecStart=/usr/local/sbin/claude-environment-update\n'
+               'TimeoutStartSec=1800\nRestart=on-failure\nRestartSec=30\n'
+               'StandardOutput=journal+console\nStandardError=journal+console\n'
+               '[Install]\nWantedBy=multi-user.target\n')
+    return [dict(path='/etc/claude-isolate/revision', content=REVISION + '\n', permissions='0644'),
+            dict(path='/usr/local/sbin/claude-environment-update',
+                 content=(root / 'guest/update.sh').read_text(), permissions='0700'),
+            dict(path='/etc/systemd/system/claude-environment-update.service', content=service, permissions='0644')]
+
+
+def payload(cfg):
+    files = json.loads(environment.cloud_config(cfg).split('\n', 1)[1])['write_files']
+    # Keep LightDM customization and global environment variables; do not run
+    # bootstrap on an installed guest (it resets first-login preferences).
+    excluded = {'/etc/environment', '/etc/lightdm/lightdm.conf.d/50-isolated.conf'}
+    files = [item for item in files if item['path'] not in excluded]
+    for item in gateway_files(environment.ROOT) + guest_files(environment.ROOT):
+        files = [old for old in files if old['path'] != item['path']]
+        files.append(item)
+    files.append(dict(path='/etc/nftables.conf',
+                      content=(environment.ROOT / 'guest/firewall.nft').read_text(), permissions='0600'))
+    return dict(files=files, enable=[(unit, 'multi-user.target') for unit in (
+        'claude-gateway.service', 'claude-environment-update.service', 'claude-setup.service')]
+        + [('claude-desktop-ready.service', 'graphical.target')])
+
+
+def image_tool(cfg):
+    return str(Path(cfg['qemu_executable']).with_name('qemu-img.exe' if os.name == 'nt' else 'qemu-img'))
+
+
+def image_command(cfg, *args):
+    result = subprocess.run([image_tool(cfg), *args], check=True, capture_output=True,
+                            text=True, encoding='utf-8', errors='replace', timeout=120,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return result.stdout
+
+
+def recover(data, cfg):
+    from windows.backend import write_config, emit
+    journal = data / 'guest-update-transaction.json'
+    if not journal.exists():
+        return
+    transaction = json.loads(journal.read_text(encoding='utf-8'))
+    if Path(transaction['disk']).resolve() != Path(cfg['disk']).resolve():
+        raise RuntimeError('Незавершённое обновление относится к другому диску. Автоматический запуск отменён.')
+    if cfg.get('guest_revision') == transaction['revision'] and cfg.get('guest_update_snapshot') == transaction['snapshot']:
+        journal.unlink()
+        return  # Configuration committed; never undo subsequent user changes.
+    info = json.loads(image_command(cfg, 'info', '--output=json', cfg['disk']))
+    if any(item['name'] == transaction['snapshot'] for item in info.get('snapshots', [])):
+        emit('Восстанавливаю диск после незавершённого обновления…')
+        image_command(cfg, 'snapshot', '-a', transaction['snapshot'], cfg['disk'])
+    elif transaction['phase'] != 'snapshot-pending':
+        raise RuntimeError('Не найден снимок незавершённого обновления. Запуск остановлен для сохранения данных.')
+    original = transaction['configuration']
+    # Keep the current runtime paths after reinstalling the controller.
+    original.update({key: cfg[key] for key in ('qemu_executable', 'qemu_data_dir') if key in cfg})
+    write_config(data / 'environment.json', original)
+    cfg.clear()
+    cfg.update(original)
+    journal.unlink()
+
+
+def maintenance(cfg, base, directory, content):
+    from windows.backend import seed_iso
+    nonce = uuid.uuid4().hex
+    marker = 'CLAUDE-ISOLATION: offline-update-complete ' + nonce
+    seed_files = directory / 'seed-files'
+    seed_files.mkdir()
+    # An offline helper has no NIC, host mounts, gateway, clipboard, or account
+    # credentials. It mounts ONLY the old guest's ext4 partition as /dev/vdb1.
+    script = ('#!/bin/sh\nset -eu\n'
+              'finish() { sync; umount /target 2>/dev/null || true; systemctl --no-block poweroff; }; trap finish EXIT\n'
+              'test "$(blkid -s TYPE -o value /dev/vdb1)" = ext4\n'
+              'mkdir /target; mount -t ext4 -o nodev,nosuid,noexec /dev/vdb1 /target\n'
+              'python3 /offline-update.py /target /payload.json\n'
+              'sync; umount /target\n'
+              'echo "' + marker + '" > /dev/console\n')
+    data = dict(hostname='isolated-maintenance', users=[], package_update=False,
+                growpart=dict(mode='off'), resize_rootfs=False,
+                write_files=[dict(path='/payload.json', content=json.dumps(content), permissions='0600'),
+                             dict(path='/offline-update.py', content=(environment.ROOT / 'guest/offline-update.py').read_text(), permissions='0600'),
+                             dict(path='/apply-update.sh', content=script, permissions='0700')],
+                runcmd=[['sh', '/apply-update.sh']])
+    (seed_files / 'user-data').write_text('#cloud-config\n' + json.dumps(data), encoding='utf-8', newline='\n')
+    (seed_files / 'meta-data').write_text('instance-id: maintenance-' + nonce + '\n', encoding='utf-8')
+    (seed_files / 'network-config').write_text('version: 2\nethernets: {}\n', encoding='utf-8')
+    seed, helper, log = directory / 'seed.iso', directory / 'helper.qcow2', directory / 'boot.log'
+    seed_iso(seed_files, seed)
+    image_command(cfg, 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(base.resolve()), str(helper))
+    command = [cfg['qemu_executable'], '-nodefaults', '-machine', 'q35',
+               '-accel', 'tcg,thread=multi', '-cpu', 'max', '-m', '1536', '-smp', '2',
+               '-display', 'none', '-monitor', 'none', '-serial', 'file:' + environment.qemu_path(log),
+               '-nic', 'none', '-no-reboot',
+               '-drive', 'file=' + environment.qemu_path(helper) + ',if=virtio,format=qcow2',
+               '-drive', 'file=' + environment.qemu_path(Path(cfg['disk'])) + ',if=virtio,format=qcow2',
+               '-drive', 'file=' + environment.qemu_path(seed) + ',if=virtio,format=raw,readonly=on']
+    if cfg.get('qemu_data_dir'):
+        command += ['-L', cfg['qemu_data_dir']]
+    job, process = None, None
+    try:
+        if os.name == 'nt':
+            from windows.job import Job
+            job = Job()
+        with (directory / 'qemu.log').open('wb') as output:
+            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if job:
+                job.assign(process)
+            process.wait(timeout=1200)
+        if process.returncode or marker not in log.read_text(encoding='utf-8', errors='replace'):
+            raise RuntimeError('Обновление Linux не завершилось. Проверьте guest-update-boot.log; исходный диск будет восстановлен.')
+    finally:
+        if job:
+            job.close()
+        if process and process.poll() is None:
+            process.kill()
+            process.wait(timeout=30)
+        for source, target in ((log, 'guest-update-boot.log'), (directory / 'qemu.log', 'guest-update-qemu.log')):
+            if source.is_file():
+                (directory.parent / target).write_bytes(source.read_bytes())
+
+
+def upgrade(data, cfg):
+    from windows.backend import emit, find_tool, write_config, GUEST_GATEWAY_VERSION
+    disk = Path(cfg['disk']).resolve()
+    with exclusive(disk.with_suffix('.launch.lock')):
+        recover(data, cfg)
+        if cfg.get('guest_revision') == REVISION and cfg.get('guest_gateway_version') == GUEST_GATEWAY_VERSION:
+            return
+        emit('Обновляю существующий Linux-диск. Файлы и настройки сохраняются…')
+        info = json.loads(image_command(cfg, 'info', '--output=json', str(disk)))
+        if info.get('format') != 'qcow2' or info.get('backing-filename'):
+            raise RuntimeError('Автоматическое обновление требует отдельного диска qcow2 без backing-файла.')
+        base, digest = ubuntu_image.download(data / 'downloads', 'x86_64', str(find_tool('gpg')))
+        if not ubuntu_image.matches(base, digest):
+            raise RuntimeError('Ubuntu maintenance image checksum mismatch')
+        snapshot = 'before-update-' + REVISION + '-' + uuid.uuid4().hex
+        journal = data / 'guest-update-transaction.json'
+        transaction = dict(disk=str(disk), snapshot=snapshot, revision=REVISION,
+                           phase='snapshot-pending', configuration=dict(cfg))
+        write_config(journal, transaction)
+        try:
+            image_command(cfg, 'snapshot', '-c', snapshot, str(disk))
+            transaction['phase'] = 'updating'
+            write_config(journal, transaction)
+            with tempfile.TemporaryDirectory(prefix='.guest-update-', dir=data) as temporary:
+                maintenance(cfg, base, Path(temporary), payload(cfg))
+            updated = dict(cfg, guest_revision=REVISION, guest_gateway_version=GUEST_GATEWAY_VERSION,
+                           guest_update_snapshot=snapshot)
+            write_config(data / 'environment.json', updated)
+            cfg.update(updated)
+            journal.unlink()
+        except BaseException:
+            recover(data, cfg)
+            raise
+        emit('Образ обновлён. Claude и Firefox обновятся автоматически при следующем запуске Linux через защищённую сеть.')

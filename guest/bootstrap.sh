@@ -141,6 +141,9 @@ printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > /etc/systemd/journal
 systemctl restart systemd-journald
 fstrim -av || true
 touch /var/lib/claude-isolation-ready
+if [ -x /usr/local/sbin/claude-environment-update ]; then
+  /usr/local/sbin/claude-environment-update --installed
+fi
 systemctl unmask lightdm.service
 systemctl enable lightdm
 systemctl restart lightdm

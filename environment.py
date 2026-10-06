@@ -289,6 +289,9 @@ WantedBy=graphical.target
     # JSON is valid YAML, including for cloud-init. No YAML dependency needed.
     if platform.system() == 'Windows':
         from windows.serial_gateway import boot_command
+        from windows.guest_update import guest_files
+        data['write_files'] += guest_files(ROOT)
+        data['runcmd'].append(['systemctl', 'enable', '--now', 'claude-environment-update.service'])
         data['bootcmd'] = [boot_command(ROOT)]
     return '#cloud-config\n' + json.dumps(data, ensure_ascii=False, indent=2) + '\n'
 

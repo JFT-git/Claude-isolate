@@ -14,7 +14,17 @@ guest installs XFCE, Claude Desktop, and Firefox automatically on its first boot
 
 Data, sessions, and logs are in %LOCALAPPDATA%\Claude Isolate. Uninstalling the
 controller preserves that directory. Do not delete it if you need your VM data.
-Updating the controller does not require recreating the Linux disk.
+Close the environment and controller before installing an update. The installer
+updates the EXISTING Linux disk, including guests with cloud-init disabled;
+it preserves files, accounts, browser profiles, and desktop preferences.
+A qcow2 snapshot protects the disk during the offline update. Interrupted
+updates are recovered before Linux can boot. The helper has no network adapter.
+Claude and Firefox update through the protected gateway on the next guest boot;
+if networking is unavailable, the update retries automatically.
+Installer progress and errors: %LOCALAPPDATA%\Claude Isolate\installer-update.log.
+Portable ZIP upgrades use the same mechanism automatically on the next Start.
+The updater does not perform an Ubuntu release upgrade or restore data from
+other, inactive disks created by earlier versions.
 Use a full-tunnel/TUN VPN; a Windows HTTP proxy alone does not route the gateway.
 Synthetic VPN DNS answers in 198.18.0.0/15 are resolved to real public addresses
 using certificate-verified Cloudflare DNS-over-HTTPS over the host's routing.

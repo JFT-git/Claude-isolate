@@ -156,6 +156,71 @@ subprocess.run(['systemctl', 'is-active', '--quiet', 'lightdm'], check=True)
 print('WINDOWS-INTEGRATION: DESKTOP-READY', flush=True)
 '''
 
+UPGRADE_PROBE = '''import hashlib
+fixture = pathlib.Path('/var/lib/claude-isolate/ci-preservation.json')
+home = pathlib.Path('/home/claude')
+if fixture.exists():
+    import json
+    for relative, expected in json.loads(fixture.read_text()).items():
+        actual = hashlib.sha256((home / relative).read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError('Guest upgrade changed user data: ' + relative)
+    if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '0.3.13':
+        raise RuntimeError('Offline updater did not install the current guest revision')
+    if not pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').exists():
+        raise RuntimeError('Online application update did not complete')
+    print('WINDOWS-INTEGRATION: USERDATA-PRESERVED', flush=True)
+    print('WINDOWS-INTEGRATION: GUEST-UPDATE-OK', flush=True)
+else:
+    import json
+    files = {'Documents/preserved.txt': b'User document before upgrade\\n',
+             '.config/claude-isolate-ci/preferences.json': b'{"language":"fr","custom":true}',
+             '.config/claude-isolate-ci/session': b'test-session-no-real-credentials'}
+    hashes = {}
+    for relative, content in files.items():
+        file = home / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(content)
+        hashes[relative] = hashlib.sha256(content).hexdigest()
+    fixture.write_text(json.dumps(hashes))
+    # Model an installed OLD image with cloud-init disabled and a missing
+    # persistent gateway. Merely replacing its seed cannot fix its next boot.
+    pathlib.Path('/etc/systemd/system/claude-gateway.service').unlink()
+    pathlib.Path('/usr/local/sbin/claude-environment-update').unlink()
+    pathlib.Path('/etc/claude-isolate/revision').write_text('0.3.12\\n')
+    pathlib.Path('/var/lib/claude-isolate/updated-0.3.13').unlink(missing_ok=True)
+    print('WINDOWS-INTEGRATION: LEGACY-GUEST-PREPARED', flush=True)
+'''
+
+
+def install_guest_update(directory, data, report):
+    installer = ROOT / 'dist/Claude-isolate-windows-x64-setup.exe'
+    target = directory / 'Installer updated app'
+    path = data / 'environment.json'
+    cfg = environment.load_config(path)
+    disk, seed = cfg['disk'], cfg['seed']
+    seed_digest = hashlib.sha256(Path(seed).read_bytes()).hexdigest()
+    cfg.update(guest_revision='0.3.12', guest_gateway_version=1)
+    backend.write_config(path, cfg)
+    command = [str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
+               '/DIR=' + str(target), '/GUESTDATA=' + str(data), '/TASKS=']
+    print('Updating the existing guest through the REAL installer…', flush=True)
+    subprocess.run(command, check=True, timeout=1800)
+    for name in ('installer-update.log', 'guest-update-boot.log', 'guest-update-qemu.log'):
+        if (data / name).exists():
+            shutil.copy2(data / name, report / name)
+    updated = environment.load_config(path)
+    if updated.get('guest_revision') != '0.3.13' or not updated.get('guest_update_snapshot'):
+        print((data / 'installer-update.log').read_text(encoding='utf-8', errors='replace')[-12000:])
+        raise RuntimeError('The installer did not update the old Linux image')
+    if updated['disk'] != disk or updated['seed'] != seed or hashlib.sha256(Path(seed).read_bytes()).hexdigest() != seed_digest:
+        raise RuntimeError('Installer replaced the existing disk or seed')
+    snapshot = updated['guest_update_snapshot']
+    subprocess.run(command, check=True, timeout=120)
+    if environment.load_config(path).get('guest_update_snapshot') != snapshot:
+        raise RuntimeError('Installing the same version repeated the guest migration')
+    return updated
+
 
 def run_guest(core, path, cfg, report, desktop):
     report.mkdir(parents=True, exist_ok=True)
@@ -309,7 +374,7 @@ def main():
             # assertions and shutdown AFTER it finishes automatically.
             cloud_data = json.loads(environment.cloud_config(cfg).split('\n', 1)[1])
             cloud_data['write_files'].append({'path': '/ci-probe.py',
-                                             'content': DESKTOP_PROBE + PROBE, 'permissions': '0600'})
+                                             'content': DESKTOP_PROBE + PROBE + UPGRADE_PROBE, 'permissions': '0600'})
             cloud_data['write_files'].append({'path': '/etc/systemd/system/ci-reboot-probe.service',
                 'content': ('[Unit]\nDescription=Verify guest after reboot\n'
                             'After=claude-desktop-ready.service claude-gateway.service\n'
@@ -344,12 +409,21 @@ def main():
             evidence = report / ('boot-' + str(cycle + 1))
             boot = run_guest(core, path, cfg, evidence, args.desktop)
             boots.append(boot)
+            if args.desktop and cycle == 0:
+                cfg = install_guest_update(directory, path.parent, report)
+            if args.desktop and cycle == 1:
+                for marker in ('USERDATA-PRESERVED', 'GUEST-UPDATE-OK'):
+                    if 'WINDOWS-INTEGRATION: ' + marker not in boot:
+                        raise RuntimeError('Old image upgrade was not verified: ' + marker)
         # Retain the original evidence names for existing artifact consumers.
         for file in evidence.iterdir():
             shutil.copy2(file, report / file.name)
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'guest_display': 'gtk', 'bundled_runtime': True, 'external_tools_removed_from_path': True, 'automatic_desktop_verified': args.desktop,
                   'boot_cycles': len(boots), 'gateway_after_reboot_verified': len(boots) == 2,
+                  'installer_existing_guest_upgrade_verified': args.desktop,
+                  'user_files_profiles_and_settings_preserved': args.desktop,
+                  'same_version_upgrade_idempotent': args.desktop,
                   'boots_without_external_qmp_client': True, 'repeated_control_requests': True,
                   'bulk_https_checksum_verified': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
