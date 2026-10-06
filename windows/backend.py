@@ -218,11 +218,13 @@ def prepare(data, cfg):
     emit('Загрузка Ubuntu и проверка подписи образа…')
     base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))
     emit('Создание отдельного диска Linux…')
-    environment.prepare(cfg, base, digest)
-    # Retain the signed base as a maintenance cache for future guest updates.
+    # Persist the revision before publishing the two files; a process crash
+    # after prepare must not mistake a pristine, unbooted guest for a legacy OS.
     from windows.guest_update import REVISION
     cfg.update(guest_revision=REVISION, guest_gateway_version=GUEST_GATEWAY_VERSION)
     write_config(data / 'environment.json', cfg)
+    environment.prepare(cfg, base, digest)
+    # Retain the signed base as a maintenance cache for future guest updates.
     emit('Среда подготовлена. При первой загрузке Linux установит рабочий стол и приложения.')
 
 

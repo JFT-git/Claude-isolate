@@ -1,5 +1,6 @@
 """Transactional, offline updates of an existing qcow2 guest, with no guest NIC."""
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -59,6 +60,27 @@ def image_command(cfg, *args):
     return result.stdout
 
 
+def updated_seed(cfg, directory):
+    import pycdlib
+    from windows.backend import seed_iso
+    metadata = io.BytesIO()
+    iso = pycdlib.PyCdlib()
+    iso.open(cfg['seed'])
+    try:
+        # Preserve the instance ID so an initialized guest cannot accidentally
+        # rerun first-login bootstrap if cloud-init gets reenabled later.
+        iso.get_file_from_iso_fp(metadata, rr_path='/meta-data')
+    finally:
+        iso.close()
+    folder = directory / 'updated-seed-files'
+    folder.mkdir()
+    (folder / 'meta-data').write_bytes(metadata.getvalue())
+    (folder / 'user-data').write_text(environment.cloud_config(cfg), encoding='utf-8', newline='\n')
+    result = directory / 'updated-seed.iso'
+    seed_iso(folder, result)
+    return result
+
+
 def recover(data, cfg):
     from windows.backend import write_config, emit
     journal = data / 'guest-update-transaction.json'
@@ -77,6 +99,13 @@ def recover(data, cfg):
     elif transaction['phase'] != 'snapshot-pending':
         raise RuntimeError('Не найден снимок незавершённого обновления. Запуск остановлен для сохранения данных.')
     original = transaction['configuration']
+    if transaction.get('seed_backup'):
+        backup = Path(transaction['seed_backup'])
+        if not backup.is_file():
+            raise RuntimeError('Не найдена резервная копия ISO незавершённого обновления.')
+        replacement = Path(original['seed']).with_suffix('.restore.iso')
+        replacement.write_bytes(backup.read_bytes())
+        os.replace(replacement, original['seed'])
     # Keep the current runtime paths after reinstalling the controller.
     original.update({key: cfg[key] for key in ('qemu_executable', 'qemu_data_dir') if key in cfg})
     write_config(data / 'environment.json', original)
@@ -160,18 +189,26 @@ def upgrade(data, cfg):
         if not ubuntu_image.matches(base, digest):
             raise RuntimeError('Ubuntu maintenance image checksum mismatch')
         snapshot = 'before-update-' + REVISION + '-' + uuid.uuid4().hex
+        seed_backup = data / (snapshot + '.iso')
+        with seed_backup.open('xb') as output:
+            output.write(Path(cfg['seed']).read_bytes())
+            output.flush()
+            os.fsync(output.fileno())
         journal = data / 'guest-update-transaction.json'
         transaction = dict(disk=str(disk), snapshot=snapshot, revision=REVISION,
-                           phase='snapshot-pending', configuration=dict(cfg))
+                           phase='snapshot-pending', configuration=dict(cfg), seed_backup=str(seed_backup))
         write_config(journal, transaction)
         try:
             image_command(cfg, 'snapshot', '-c', snapshot, str(disk))
             transaction['phase'] = 'updating'
             write_config(journal, transaction)
             with tempfile.TemporaryDirectory(prefix='.guest-update-', dir=data) as temporary:
-                maintenance(cfg, base, Path(temporary), payload(cfg))
+                directory = Path(temporary)
+                seed = updated_seed(cfg, directory)
+                maintenance(cfg, base, directory, payload(cfg))
+                os.replace(seed, cfg['seed'])
             updated = dict(cfg, guest_revision=REVISION, guest_gateway_version=GUEST_GATEWAY_VERSION,
-                           guest_update_snapshot=snapshot)
+                           guest_update_snapshot=snapshot, guest_update_seed_backup=str(seed_backup))
             write_config(data / 'environment.json', updated)
             cfg.update(updated)
             journal.unlink()

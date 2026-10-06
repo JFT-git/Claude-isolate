@@ -40,7 +40,10 @@ def apply(root, payload):
         raise ValueError('Only existing Ubuntu environments can be updated')
     passwd = destination(root, '/etc/passwd').read_text().splitlines()
     if not any(line.startswith('claude:') for line in passwd):
-        raise ValueError('The target disk is not a Claude Isolate environment')
+        # A previously prepared cloud image may never have booted. Its new
+        # seed will create the desktop user on first boot; no user data exists.
+        if (root / 'var/lib/cloud/instance').exists() or (root / 'etc/cloud/cloud-init.disabled').exists() or not (root / 'etc/cloud/cloud.cfg').is_file():
+            raise ValueError('The target disk is not an initialized Claude Isolate environment or pristine cloud image')
     links = []
     for unit, target in payload['enable']:
         if '/' in unit or not unit.endswith('.service') or target not in ('multi-user.target', 'graphical.target'):

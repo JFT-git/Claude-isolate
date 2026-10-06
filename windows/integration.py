@@ -213,8 +213,10 @@ def install_guest_update(directory, data, report):
     if updated.get('guest_revision') != '0.3.13' or not updated.get('guest_update_snapshot'):
         print((data / 'installer-update.log').read_text(encoding='utf-8', errors='replace')[-12000:])
         raise RuntimeError('The installer did not update the old Linux image')
-    if updated['disk'] != disk or updated['seed'] != seed or hashlib.sha256(Path(seed).read_bytes()).hexdigest() != seed_digest:
-        raise RuntimeError('Installer replaced the existing disk or seed')
+    if updated['disk'] != disk or updated['seed'] != seed:
+        raise RuntimeError('Installer switched to a different disk or seed path')
+    if hashlib.sha256(Path(updated['guest_update_seed_backup']).read_bytes()).hexdigest() != seed_digest:
+        raise RuntimeError('Installer did not preserve the old seed for rollback')
     snapshot = updated['guest_update_snapshot']
     subprocess.run(command, check=True, timeout=120)
     if environment.load_config(path).get('guest_update_snapshot') != snapshot:

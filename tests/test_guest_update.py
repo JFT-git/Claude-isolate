@@ -66,7 +66,11 @@ class GuestUpdateTests(unittest.TestCase):
         cfg.update(qemu_executable=str(data / 'qemu-system-x86_64'), guest_revision='0.3.12')
         backend.write_config(path, cfg)
         Path(cfg['disk']).write_bytes(b'original-user-image')
-        Path(cfg['seed']).write_bytes(b'original-seed')
+        folder = data / 'original-seed-files'
+        folder.mkdir()
+        (folder / 'meta-data').write_bytes(b'instance-id: existing-instance\n')
+        (folder / 'user-data').write_text('#cloud-config\n{}\n')
+        backend.seed_iso(folder, Path(cfg['seed']))
         base = data / 'base.qcow2'
         base.write_bytes(b'verified-base')
         snapshots = {}
@@ -82,10 +86,11 @@ class GuestUpdateTests(unittest.TestCase):
             return ''
         return data, path, cfg, base, image, calls
 
-    def test_upgrade_keeps_disk_path_seed_and_is_idempotent(self):
+    def test_upgrade_keeps_disk_path_and_seed_identity_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
             data, path, cfg, base, image, calls = self.transaction(temporary)
             original_path = cfg['disk']
+            original_seed = Path(cfg['seed']).read_bytes()
             def maintain(cfg, base, temporary, content):
                 Path(cfg['disk']).write_bytes(b'updated-user-image')
             with patch.object(guest_update, 'image_command', side_effect=image), \
@@ -97,7 +102,15 @@ class GuestUpdateTests(unittest.TestCase):
                 guest_update.upgrade(data, cfg)
             maintain_mock.assert_called_once()
             self.assertEqual(cfg['disk'], original_path)
-            self.assertEqual(Path(cfg['seed']).read_bytes(), b'original-seed')
+            self.assertEqual(Path(cfg['guest_update_seed_backup']).read_bytes(), original_seed)
+            import io
+            import pycdlib
+            metadata = io.BytesIO()
+            iso = pycdlib.PyCdlib()
+            iso.open(cfg['seed'])
+            iso.get_file_from_iso_fp(metadata, rr_path='/meta-data')
+            iso.close()
+            self.assertEqual(metadata.getvalue(), b'instance-id: existing-instance\n')
             self.assertEqual(environment.load_config(path)['guest_revision'], guest_update.REVISION)
             self.assertFalse((data / 'guest-update-transaction.json').exists())
             self.assertEqual(sum(args[:2] == ('snapshot', '-c') for args in calls), 1)
@@ -107,6 +120,7 @@ class GuestUpdateTests(unittest.TestCase):
             with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory() as temporary:
                 data, path, cfg, base, image, calls = self.transaction(temporary)
                 original = dict(cfg)
+                original_seed = Path(cfg['seed']).read_bytes()
                 def maintain(*args):
                     Path(cfg['disk']).write_bytes(b'partial-write')
                     raise failure
@@ -118,9 +132,34 @@ class GuestUpdateTests(unittest.TestCase):
                     with self.assertRaises(type(failure)):
                         guest_update.upgrade(data, cfg)
                 self.assertEqual(Path(cfg['disk']).read_bytes(), b'original-user-image')
+                self.assertEqual(Path(cfg['seed']).read_bytes(), original_seed)
                 self.assertEqual(environment.load_config(path), original)
                 self.assertEqual(cfg, original)
                 self.assertFalse((data / 'guest-update-transaction.json').exists())
+
+    def test_configuration_commit_failure_restores_modified_seed_and_disk(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data, path, cfg, base, image, _ = self.transaction(temporary)
+            original_seed = Path(cfg['seed']).read_bytes()
+            original = dict(cfg)
+            real_write = backend.write_config
+            def write(destination, content):
+                if destination == path and content.get('guest_revision') == guest_update.REVISION:
+                    raise OSError('Simulated failed configuration commit')
+                real_write(destination, content)
+            def maintain(*args):
+                Path(cfg['disk']).write_bytes(b'updated-root')
+            with patch.object(guest_update, 'image_command', side_effect=image), \
+                 patch.object(guest_update.ubuntu_image, 'download', return_value=(base, 'digest')), \
+                 patch.object(guest_update.ubuntu_image, 'matches', return_value=True), \
+                 patch.object(backend, 'find_tool', return_value='gpg'), patch.object(backend, 'emit'), \
+                 patch.object(backend, 'write_config', side_effect=write), \
+                 patch.object(guest_update, 'maintenance', side_effect=maintain):
+                with self.assertRaises(OSError):
+                    guest_update.upgrade(data, cfg)
+            self.assertEqual(Path(cfg['seed']).read_bytes(), original_seed)
+            self.assertEqual(Path(cfg['disk']).read_bytes(), b'original-user-image')
+            self.assertEqual(environment.load_config(path), original)
 
     def test_running_disk_cannot_be_upgraded(self):
         with tempfile.TemporaryDirectory() as temporary:
