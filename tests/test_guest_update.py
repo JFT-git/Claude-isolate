@@ -201,36 +201,99 @@ class GuestUpdateTests(unittest.TestCase):
             download.assert_not_called()
             self.assertFalse((Path(temporary) / 'environment.json').exists())
 
-    def test_maintenance_has_no_network_or_host_mounts_and_terminates_before_rollback(self):
+    def test_maintenance_starts_without_user_disk_and_has_no_network(self):
         with tempfile.TemporaryDirectory() as temporary:
             data, _, cfg, base, _, _ = self.transaction(temporary)
             helper = data / 'helper'
             helper.mkdir()
-            command = []
+            with patch.object(guest_update, 'image_command'), \
+                 patch.object(backend, 'seed_iso'), \
+                 patch.object(guest_update, 'run_helper', side_effect=subprocess.TimeoutExpired('qemu', 1200)) as run:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    guest_update.maintenance(cfg, base, helper, guest_update.payload(cfg))
+            command = run.call_args.args[0]
+            self.assertEqual(command[command.index('-nic') + 1], 'none')
+            self.assertNotIn('-virtfs', command)
+            self.assertNotIn('-netdev', command)
+            self.assertFalse(any(cfg['disk'] in argument for argument in command))
+            self.assertIn('pcie-root-port,id=update-port,chassis=1,slot=1', command)
+
+    def test_broken_helper_control_reaps_process_before_returning_for_rollback(self):
+        import io
+        with tempfile.TemporaryDirectory() as temporary:
+            data, _, cfg, _, _, _ = self.transaction(temporary)
             class Process:
                 returncode = None
-                def wait(self, timeout):
-                    if self.returncode is None:
-                        raise subprocess.TimeoutExpired('qemu', timeout)
+                stdin = io.BytesIO()
+                stdout = io.BytesIO()
                 def poll(self):
                     return self.returncode
                 def kill(self):
                     self.returncode = -1
+                def wait(self, timeout):
+                    return self.returncode
             process = Process()
-            def spawn(args, **kwargs):
-                command.extend(args)
-                return process
-            with patch.object(guest_update, 'image_command'), \
-                 patch.object(backend, 'seed_iso'), patch.object(guest_update.subprocess, 'Popen', side_effect=spawn):
+            with patch.object(guest_update.subprocess, 'Popen', return_value=process):
                 if os.name == 'nt':
                     from windows import job
                     with patch.object(job, 'Job'):
-                        with self.assertRaises(subprocess.TimeoutExpired):
-                            guest_update.maintenance(cfg, base, helper, guest_update.payload(cfg))
+                        with self.assertRaises(RuntimeError):
+                            guest_update.run_helper(['qemu'], cfg, data / 'boot.log', 'ready')
                 else:
-                    with self.assertRaises(subprocess.TimeoutExpired):
-                        guest_update.maintenance(cfg, base, helper, guest_update.payload(cfg))
-            self.assertEqual(command[command.index('-nic') + 1], 'none')
-            self.assertNotIn('-virtfs', command)
-            self.assertNotIn('-netdev', command)
+                    with self.assertRaises(RuntimeError):
+                        guest_update.run_helper(['qemu'], cfg, data / 'boot.log', 'ready')
             self.assertEqual(process.returncode, -1)
+            self.assertTrue(process.stdin.closed)
+            self.assertTrue(process.stdout.closed)
+
+    def test_user_disk_is_attached_only_after_helper_root_ready(self):
+        import queue
+        with tempfile.TemporaryDirectory() as temporary:
+            data, _, cfg, _, _, _ = self.transaction(temporary)
+            log = data / 'boot.log'
+            commands = []
+            messages = queue.Queue()
+            messages.put(dict(QMP={}))
+            class Output:
+                def __iter__(self):
+                    return self
+                def __next__(self):
+                    message = messages.get(timeout=2)
+                    if message is None:
+                        raise StopIteration
+                    return (json.dumps(message) + '\n').encode()
+                def close(self):
+                    pass
+            class Input:
+                def write(self, content):
+                    message = json.loads(content)
+                    commands.append(message)
+                    messages.put(dict(id=message['id'], **{'return': {}}))
+                    if message['execute'] == 'device_add':
+                        process.returncode = 0
+                        messages.put(None)
+                def flush(self):
+                    pass
+                def close(self):
+                    pass
+            class Process:
+                returncode = None
+                stdin, stdout = Input(), Output()
+                def poll(self):
+                    return self.returncode
+            process = Process()
+            def sleep(_):
+                if log.exists():
+                    return
+                self.assertEqual([c['execute'] for c in commands], ['qmp_capabilities'])
+                log.write_text('helper-root-ready')
+            with patch.object(guest_update.subprocess, 'Popen', return_value=process), \
+                 patch.object(guest_update.time, 'sleep', side_effect=sleep):
+                if os.name == 'nt':
+                    from windows import job
+                    with patch.object(job, 'Job'):
+                        self.assertEqual(guest_update.run_helper(['qemu'], cfg, log, 'helper-root-ready'), 0)
+                else:
+                    self.assertEqual(guest_update.run_helper(['qemu'], cfg, log, 'helper-root-ready'), 0)
+            self.assertEqual([c['execute'] for c in commands], ['qmp_capabilities', 'blockdev-add', 'device_add'])
+            self.assertEqual(commands[1]['arguments']['file']['filename'], str(Path(cfg['disk']).resolve()))

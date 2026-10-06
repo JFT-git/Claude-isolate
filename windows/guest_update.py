@@ -3,8 +3,11 @@ import json
 import io
 import os
 from pathlib import Path
+import queue
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 
 import environment
@@ -114,16 +117,99 @@ def recover(data, cfg):
     journal.unlink()
 
 
+def run_helper(command, cfg, log, ready):
+    """Attach the old disk only AFTER the helper has mounted its own root.
+
+    Ubuntu copies share root UUIDs/labels. Attaching both disks at firmware
+    startup can boot the user's OS instead of the maintenance OS.
+    """
+    job, process = None, None
+    replies = queue.Queue()
+    def receive():
+        try:
+            for line in process.stdout:
+                replies.put(json.loads(line))
+        except (OSError, ValueError) as error:
+            replies.put(error)
+        finally:
+            replies.put(None)
+    def reply(identifier=None):
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                item = replies.get(timeout=max(.001, deadline - time.monotonic()))
+            except queue.Empty as error:
+                raise RuntimeError('Maintenance QMP did not respond') from error
+            if item is None or isinstance(item, Exception):
+                raise RuntimeError('Maintenance QMP disconnected')
+            if (identifier is None and 'QMP' in item) or (identifier is not None and item.get('id') == identifier):
+                if 'error' in item:
+                    raise RuntimeError('Maintenance QMP: ' + str(item['error']))
+                return item
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Maintenance QMP response deadline exceeded')
+    def request(name, arguments=None):
+        message = dict(execute=name, id=name)
+        if arguments is not None:
+            message['arguments'] = arguments
+        process.stdin.write((json.dumps(message) + '\n').encode('utf-8'))
+        process.stdin.flush()
+        return reply(name)
+    reader = None
+    try:
+        if os.name == 'nt':
+            from windows.job import Job
+            job = Job()
+        with (log.parent / 'qemu.log').open('wb') as output:
+            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=output,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            if job:
+                job.assign(process)
+            reader = threading.Thread(target=receive, daemon=True)
+            reader.start()
+            reply()
+            request('qmp_capabilities')
+            deadline = time.monotonic() + 1200
+            attached = False
+            while process.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, 1200)
+                if not attached and log.exists() and ready in log.read_text(encoding='utf-8', errors='replace'):
+                    request('blockdev-add', dict(driver='qcow2', **{'node-name': 'update-target'},
+                        file=dict(driver='file', filename=str(Path(cfg['disk']).resolve()))))
+                    request('device_add', dict(driver='virtio-blk-pci', drive='update-target',
+                                              id='update-disk', bus='update-port'))
+                    attached = True
+                time.sleep(.2)
+            if not attached:
+                raise RuntimeError('Maintenance did not request the existing disk')
+            return process.returncode
+    finally:
+        if job:
+            job.close()
+        if process:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=30)
+            if process.stdin:
+                process.stdin.close()
+            if reader:
+                reader.join(timeout=5)
+            process.stdout.close()
+
+
 def maintenance(cfg, base, directory, content):
     from windows.backend import seed_iso
     nonce = uuid.uuid4().hex
     marker = 'CLAUDE-ISOLATION: offline-update-complete ' + nonce
+    ready = 'CLAUDE-ISOLATION: maintenance-awaiting-disk ' + nonce
     seed_files = directory / 'seed-files'
     seed_files.mkdir()
     # An offline helper has no NIC, host mounts, gateway, clipboard, or account
     # credentials. It mounts ONLY the old guest's ext4 partition as /dev/vdb1.
     script = ('#!/bin/sh\nset -eu\n'
               'finish() { sync; umount /target 2>/dev/null || true; systemctl --no-block poweroff; }; trap finish EXIT\n'
+              'count=0; while [ ! -b /dev/vdb1 ]; do count=$((count+1)); test "$count" -lt 120; sleep 1; done\n'
               'test "$(blkid -s TYPE -o value /dev/vdb1)" = ext4\n'
               'mkdir /target; mount -t ext4 -o nodev,nosuid,noexec /dev/vdb1 /target\n'
               'python3 /offline-update.py /target /payload.json\n'
@@ -131,6 +217,9 @@ def maintenance(cfg, base, directory, content):
               'echo "' + marker + '" > /dev/console\n')
     data = dict(hostname='isolated-maintenance', users=[], package_update=False,
                 growpart=dict(mode='off'), resize_rootfs=False,
+                cloud_init_modules=['bootcmd', 'write_files'], cloud_config_modules=['runcmd'],
+                cloud_final_modules=['scripts-user'],
+                bootcmd=[['sh', '-c', 'test "$(findmnt -n -o MAJ:MIN /)" = "$(lsblk -dn -o MAJ:MIN /dev/vda1)" && echo "' + ready + '" > /dev/console']],
                 write_files=[dict(path='/payload.json', content=json.dumps(content), permissions='0600'),
                              dict(path='/offline-update.py', content=(environment.ROOT / 'guest/offline-update.py').read_text(), permissions='0600'),
                              dict(path='/apply-update.sh', content=script, permissions='0700')],
@@ -145,30 +234,18 @@ def maintenance(cfg, base, directory, content):
                '-accel', 'tcg,thread=multi', '-cpu', 'max', '-m', '1536', '-smp', '2',
                '-display', 'none', '-monitor', 'none', '-serial', 'file:' + environment.qemu_path(log),
                '-nic', 'none', '-no-reboot',
+               '-qmp', 'stdio', '-device', 'pcie-root-port,id=update-port,chassis=1,slot=1',
                '-drive', 'file=' + environment.qemu_path(helper) + ',if=virtio,format=qcow2',
-               '-drive', 'file=' + environment.qemu_path(Path(cfg['disk'])) + ',if=virtio,format=qcow2',
-               '-drive', 'file=' + environment.qemu_path(seed) + ',if=virtio,format=raw,readonly=on']
+               '-device', 'virtio-scsi-pci,id=seed-controller',
+               '-drive', 'file=' + environment.qemu_path(seed) + ',if=none,id=seed,format=raw,readonly=on',
+               '-device', 'scsi-cd,drive=seed,bus=seed-controller.0']
     if cfg.get('qemu_data_dir'):
         command += ['-L', cfg['qemu_data_dir']]
-    job, process = None, None
     try:
-        if os.name == 'nt':
-            from windows.job import Job
-            job = Job()
-        with (directory / 'qemu.log').open('wb') as output:
-            process = subprocess.Popen(command, stdout=output, stderr=subprocess.STDOUT,
-                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            if job:
-                job.assign(process)
-            process.wait(timeout=1200)
-        if process.returncode or marker not in log.read_text(encoding='utf-8', errors='replace'):
+        result = run_helper(command, cfg, log, ready)
+        if result or marker not in log.read_text(encoding='utf-8', errors='replace'):
             raise RuntimeError('Обновление Linux не завершилось. Проверьте guest-update-boot.log; исходный диск будет восстановлен.')
     finally:
-        if job:
-            job.close()
-        if process and process.poll() is None:
-            process.kill()
-            process.wait(timeout=30)
         for source, target in ((log, 'guest-update-boot.log'), (directory / 'qemu.log', 'guest-update-qemu.log')):
             if source.is_file():
                 (directory.parent / target).write_bytes(source.read_bytes())
