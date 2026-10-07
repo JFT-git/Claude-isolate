@@ -45,7 +45,7 @@ def build(arch, release, output):
              'xargs -r apt-get -o Dir::State::status=/dev/null --download-only '
              'install -y --no-install-recommends < /input/packages.txt; '
              'cp /var/cache/apt/archives/*.deb /out/'])
-        disk = Path(temporary) / 'install.qcow2' 
+        disk = Path(temporary) / 'install.qcow2'
         run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '12G'])
         run(['virt-resize', '--format', 'qcow2', '--output-format', 'qcow2', '--expand', '/dev/sda1', str(base), str(disk)])
         run(['virt-customize', '--format', 'qcow2', '-a', str(disk), '--memsize', '4096', '--smp', '2', '--no-network',
