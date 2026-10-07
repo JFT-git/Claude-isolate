@@ -35,7 +35,8 @@ def build(arch, release, output):
         # Download signed APT packages outside the appliance. An empty status
         # inventory makes APT fetch the entire dependency closure, even packages
         # already installed in the container. No account or CI token is mounted.
-        run(['docker', 'run', '--rm', '-v', str(packages.resolve()) + ':/out',
+        run(['docker', 'run', '--rm', '-e', f'IMAGE_OWNER={os.getuid()}:{os.getgid()}',
+             '-v', str(packages.resolve()) + ':/out',
              '-v', str(ROOT / 'guest') + ':/input:ro', 'ubuntu:24.04', 'sh', '-ec',
              'export DEBIAN_FRONTEND=noninteractive; '
              'rm -f /etc/apt/apt.conf.d/docker-clean; '
@@ -50,7 +51,8 @@ def build(arch, release, output):
              '/etc/apt/keyrings/packages.mozilla.org.asc '
              '/etc/apt/sources.list.d/claude-desktop.list '
              '/etc/apt/sources.list.d/mozilla.list '
-             '/etc/apt/preferences.d/mozilla /out/repository-config/'])
+             '/etc/apt/preferences.d/mozilla /out/repository-config/; '
+             'chown -R "$IMAGE_OWNER" /out'])
         disk = Path(temporary) / 'install.qcow2'
         run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '12G'])
         run(['virt-resize', '--format', 'qcow2', '--output-format', 'qcow2', '--expand', '/dev/sda1', str(base), str(disk)])

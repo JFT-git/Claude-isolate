@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 rm -rf /var/lib/apt/lists/*
 apt-get install -y --no-install-recommends /tmp/claude-debs/*.deb
 # Keep the verified repository keys and Firefox pin for subsequent updates.
-cp -a /tmp/claude-debs/repository-config/. /
+cp -r /tmp/claude-debs/repository-config/. /
 set --
 for pkg in gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings; do
     if [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)" = installed ]; then
