@@ -87,7 +87,9 @@ jobs:
         if: always()
         with:
           name: guest-verification-${{ matrix.arch }}
-          path: reports/guest-boot/
+          path: |
+            reports/guest-boot/*.log
+            reports/guest-boot/*.json
           if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
