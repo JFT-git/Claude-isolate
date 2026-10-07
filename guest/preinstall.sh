@@ -9,7 +9,14 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 # dependencies, and virt-customize additionally runs with --no-network.
 rm -rf /var/lib/apt/lists/*
 apt-get install -y --no-install-recommends /tmp/claude-debs/*.deb
-apt-get purge -y gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings
+set --
+for pkg in gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings; do
+    if [ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)" = installed ]; then
+        set -- "$@" "$pkg"
+    fi
+done
+# An empty index cannot resolve names of packages absent from the image.
+if [ "$#" -gt 0 ]; then apt-get purge -y "$@"; fi
 while IFS= read -r pkg; do
     [ -z "$pkg" ] || test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
 done < /tmp/claude-packages.txt
