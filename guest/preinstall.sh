@@ -2,6 +2,10 @@
 # CI only: run in a fresh vendor image, never on a user's disk.
 set -eu
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+# The cloud image's systemd-resolved stub is not running in the appliance chroot.
+# Resolve via libguestfs/QEMU's private SLIRP DNS during CI only.
+rm -f /etc/resolv.conf
+printf 'nameserver 169.254.2.3\n' > /etc/resolv.conf
 apt-get update
 apt-get install -y --no-install-recommends curl gnupg ca-certificates
 sh /tmp/claude-repositories.sh
@@ -16,4 +20,6 @@ dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /etc/claude-prein
 touch /etc/claude-preinstalled
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/claude-repositories.sh /tmp/claude-packages.txt
+rm -f /etc/resolv.conf
+ln -s ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 systemctl mask lightdm.service ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer
