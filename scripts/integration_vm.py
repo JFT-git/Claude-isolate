@@ -109,12 +109,17 @@ WantedBy=multi-user.target
         base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], environment.tool('gpg'))
     environment.prepare(cfg, base, digest)
     # Keep the real launcher/guard/relay; override only the display for automation.
-    code = '''import sys;sys.path.insert(0,sys.argv[1]);import environment
+    code = '''import os,sys;sys.path.insert(0,sys.argv[1]);import environment
 original=environment.command
 def headless(cfg,check=True):
  cmd=original(cfg,check)
  if '-display' in cmd: cmd[cmd.index('-display')+1]='none'
  else: cmd += ['-display','none']
+ # Hosted ARM runners may not expose nested virtualization. Exercise the
+ # same image and network guard with software emulation in that case.
+ if sys.platform == 'linux' and not os.access('/dev/kvm', os.R_OK | os.W_OK):
+  cmd[cmd.index('-accel')+1]='tcg,thread=multi'
+  cmd[cmd.index('-cpu')+1]='max'
  return cmd
 environment.command=headless
 sys.argv=['environment.py','start','--config',sys.argv[2]]
