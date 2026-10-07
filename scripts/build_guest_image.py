@@ -44,7 +44,13 @@ def build(arch, release, output):
              'rm -f /var/cache/apt/archives/*.deb; '
              'xargs -r apt-get -o Dir::State::status=/dev/null --download-only '
              'install -y --no-install-recommends < /input/packages.txt; '
-             'cp /var/cache/apt/archives/*.deb /out/'])
+             'cp /var/cache/apt/archives/*.deb /out/; '
+             'mkdir /out/repository-config; '
+             'cp --parents /usr/share/keyrings/claude-desktop-archive-keyring.asc '
+             '/etc/apt/keyrings/packages.mozilla.org.asc '
+             '/etc/apt/sources.list.d/claude-desktop.list '
+             '/etc/apt/sources.list.d/mozilla.list '
+             '/etc/apt/preferences.d/mozilla /out/repository-config/'])
         disk = Path(temporary) / 'install.qcow2'
         run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '12G'])
         run(['virt-resize', '--format', 'qcow2', '--output-format', 'qcow2', '--expand', '/dev/sda1', str(base), str(disk)])

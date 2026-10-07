@@ -8,6 +8,7 @@ import argparse
 import json
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -123,7 +124,26 @@ environment.main()
     with (data / 'launcher.log').open('w') as log:
         proc = subprocess.Popen([sys.executable, '-u', '-c', code, str(ROOT), str(config_path)], stdout=log, stderr=subprocess.STDOUT)
         try:
-            proc.wait(timeout=args.timeout)
+            deadline = time.monotonic() + args.timeout
+            last_report = 0
+            while proc.poll() is None:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(proc.args, args.timeout)
+                path = data / 'boot.log'
+                if path.exists():
+                    with path.open('rb') as stream:
+                        stream.seek(0, 2)
+                        stream.seek(max(0, stream.tell() - 8192))
+                        tail = stream.read().decode('utf-8', errors='replace')
+                    plain = re.sub(r'\x1b\[[0-9;]*m', '', tail)
+                    if time.monotonic() - last_report >= 45:
+                        print('VM boot progress:\n' + plain[-4096:], flush=True)
+                        last_report = time.monotonic()
+                    if ('You are in emergency mode' in plain
+                            or 'CLAUDE-ISOLATION: FAILURE' in plain
+                            or re.search(r'Failed to start[^\n]*(claude-setup|Install isolated desktop)', plain)):
+                        raise RuntimeError('Guest reported a boot/setup failure:\n' + plain)
+                time.sleep(2)
         except BaseException:
             proc.terminate()
             proc.wait(timeout=20)

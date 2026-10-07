@@ -152,6 +152,12 @@ if [ -x /usr/local/sbin/claude-environment-update ]; then
   /usr/local/sbin/claude-environment-update --installed
 fi
 systemctl unmask lightdm.service
+if [ -f /etc/claude-preinstalled ]; then
+  # Resume Ubuntu's normal security updates on subsequent boots. Do not start
+  # timers during the first setup, which must not download packages.
+  systemctl unmask apt-daily.timer apt-daily-upgrade.timer
+  systemctl enable apt-daily.timer apt-daily-upgrade.timer
+fi
 systemctl enable lightdm
 systemctl restart lightdm
 touch /etc/cloud/cloud-init.disabled
