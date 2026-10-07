@@ -4,7 +4,11 @@ set -eu
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 # All dependencies were fetched through signed APT repositories in the CI
 # container. The appliance has no NIC; missing packages must fail the build.
-apt-get --no-download install -y --no-install-recommends /tmp/claude-debs/*.deb
+# APT's --no-download also disables acquisition of explicitly supplied local
+# files. Remove remote indexes instead: only these local archives can satisfy
+# dependencies, and virt-customize additionally runs with --no-network.
+rm -rf /var/lib/apt/lists/*
+apt-get install -y --no-install-recommends /tmp/claude-debs/*.deb
 apt-get purge -y gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings
 while IFS= read -r pkg; do
     [ -z "$pkg" ] || test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
