@@ -84,8 +84,8 @@ def main():
     config_path = data / 'environment.json'
     config_path.write_text(json.dumps(cfg))
     original_cloud = environment.cloud_config
-    def cloud():
-        content = json.loads(original_cloud().split('\n', 1)[1])
+    def cloud(configuration=None):
+        content = json.loads(original_cloud(configuration).split('\n', 1)[1])
         content['write_files'] += [
             dict(path='/usr/local/sbin/isolation-audit', owner='root:root', permissions='0700', content=GUEST_TEST),
             dict(path='/etc/systemd/system/isolation-audit.service', owner='root:root', permissions='0644', content='''[Unit]
