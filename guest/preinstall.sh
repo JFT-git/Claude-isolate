@@ -16,4 +16,4 @@ dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /etc/claude-prein
 touch /etc/claude-preinstalled
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/claude-repositories.sh /tmp/claude-packages.txt
-systemctl mask ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer
+systemctl mask lightdm.service ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer

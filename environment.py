@@ -411,7 +411,7 @@ def relay(port=None, mode='proxy', web_access='services'):
 def prepare(cfg, base, digest):
     base = Path(base).resolve()
     if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest.lower()):
-        raise ValueError('A SHA256 verified against Ubuntu signed checksums is required')
+        raise ValueError('A verified vendor or release-pinned SHA256 is required')
     h = hashlib.sha256()
     with base.open('rb') as f:
         for block in iter(lambda: f.read(1024 * 1024), b''):

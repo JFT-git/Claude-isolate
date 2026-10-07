@@ -4,6 +4,7 @@ import hashlib
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -439,6 +440,9 @@ def main():
             evidence = report / ('boot-' + str(cycle + 1))
             boot = run_guest(core, path, cfg, evidence, args.desktop)
             boots.append(boot)
+            if args.desktop and cycle == 0:
+                if 'preinstalled-image no-package-downloads' not in boot or re.search(r'Get:\d+ ', boot):
+                    raise RuntimeError('Fresh release guest downloaded packages or missed the preinstalled path')
             if args.desktop and cycle == 0:
                 cfg = install_guest_update(directory, path.parent, report)
             if args.desktop and cycle == 1:

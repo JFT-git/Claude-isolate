@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download Ubuntu with pinned signing-key verification, then create a fresh guest."""
+"""Download the release-pinned preinstalled image, then create a fresh guest."""
 import argparse
 import hashlib
 from pathlib import Path
