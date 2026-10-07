@@ -265,4 +265,7 @@ jobs:
         run: |
           cd dist
           sha256sum --check ./*.sha256
-          gh release create "$RELEASE_TAG" ./*.zip ./*.exe ./*.qcow2 ./*.sha256 --verify-tag --prerelease --generate-notes --title "Claude Isolate $RELEASE_TAG"
+          # Keep the controller and its pinned guest unavailable until every
+          # asset has uploaded; otherwise first installs can encounter a 404.
+          gh release create "$RELEASE_TAG" ./*.zip ./*.exe ./*.qcow2 ./*.sha256 --verify-tag --draft --prerelease --generate-notes --title "Claude Isolate $RELEASE_TAG"
+          gh release edit "$RELEASE_TAG" --draft=false
