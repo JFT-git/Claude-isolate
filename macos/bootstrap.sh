@@ -28,7 +28,6 @@ if [[ "$action" == start || "$action" == restart || "$action" == prepare ]]; the
   missing=()
   [[ -x "$python" ]] || missing+=(python@3.12)
   [[ -x "$brew_prefix/bin/qemu-system-$guest_arch" && -x "$brew_prefix/bin/qemu-img" ]] || missing+=(qemu)
-  [[ -x "$brew_prefix/bin/gpg" ]] || missing+=(gnupg)
   if (( ${#missing[@]} )); then
     echo '{"message":"Устанавливаю необходимые компоненты — это может занять несколько минут"}'
     "$brew_prefix/bin/brew" install "${missing[@]}"

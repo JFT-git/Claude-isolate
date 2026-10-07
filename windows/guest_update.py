@@ -12,6 +12,7 @@ import uuid
 
 import environment
 import ubuntu_image
+import release_image
 from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
@@ -263,9 +264,9 @@ def upgrade(data, cfg):
         info = json.loads(image_command(cfg, 'info', '--output=json', str(disk)))
         if info.get('format') != 'qcow2' or info.get('backing-filename'):
             raise RuntimeError('Автоматическое обновление требует отдельного диска qcow2 без backing-файла.')
-        base, digest = ubuntu_image.download(data / 'downloads', 'x86_64', str(find_tool('gpg')))
+        base, digest = release_image.download(data / 'downloads', 'x86_64')
         if not ubuntu_image.matches(base, digest):
-            raise RuntimeError('Ubuntu maintenance image checksum mismatch')
+            raise RuntimeError('Release maintenance image checksum mismatch')
         snapshot = 'before-update-' + REVISION + '-' + uuid.uuid4().hex
         seed_backup = data / (snapshot + '.iso')
         with seed_backup.open('xb') as output:

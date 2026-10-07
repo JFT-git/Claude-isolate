@@ -94,8 +94,8 @@ class GuestUpdateTests(unittest.TestCase):
             def maintain(cfg, base, temporary, content):
                 Path(cfg['disk']).write_bytes(b'updated-user-image')
             with patch.object(guest_update, 'image_command', side_effect=image), \
-                 patch.object(ubuntu_image := guest_update.ubuntu_image, 'download', return_value=(base, 'digest')), \
-                 patch.object(ubuntu_image, 'matches', return_value=True), \
+                 patch.object(guest_update.release_image, 'download', return_value=(base, 'digest')), \
+                 patch.object(guest_update.ubuntu_image, 'matches', return_value=True), \
                  patch.object(backend, 'find_tool', return_value='gpg'), patch.object(backend, 'emit'), \
                  patch.object(guest_update, 'maintenance', side_effect=maintain) as maintain_mock:
                 guest_update.upgrade(data, cfg)
@@ -125,7 +125,7 @@ class GuestUpdateTests(unittest.TestCase):
                     Path(cfg['disk']).write_bytes(b'partial-write')
                     raise failure
                 with patch.object(guest_update, 'image_command', side_effect=image), \
-                     patch.object(guest_update.ubuntu_image, 'download', return_value=(base, 'digest')), \
+                     patch.object(guest_update.release_image, 'download', return_value=(base, 'digest')), \
                      patch.object(guest_update.ubuntu_image, 'matches', return_value=True), \
                      patch.object(backend, 'find_tool', return_value='gpg'), patch.object(backend, 'emit'), \
                      patch.object(guest_update, 'maintenance', side_effect=maintain):
@@ -150,7 +150,7 @@ class GuestUpdateTests(unittest.TestCase):
             def maintain(*args):
                 Path(cfg['disk']).write_bytes(b'updated-root')
             with patch.object(guest_update, 'image_command', side_effect=image), \
-                 patch.object(guest_update.ubuntu_image, 'download', return_value=(base, 'digest')), \
+                 patch.object(guest_update.release_image, 'download', return_value=(base, 'digest')), \
                  patch.object(guest_update.ubuntu_image, 'matches', return_value=True), \
                  patch.object(backend, 'find_tool', return_value='gpg'), patch.object(backend, 'emit'), \
                  patch.object(backend, 'write_config', side_effect=write), \
@@ -165,7 +165,7 @@ class GuestUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             data, _, cfg, _, _, _ = self.transaction(temporary)
             with exclusive(Path(cfg['disk']).with_suffix('.launch.lock')), \
-                 patch.object(guest_update.ubuntu_image, 'download') as download:
+                 patch.object(guest_update.release_image, 'download') as download:
                 with self.assertRaises(RuntimeError):
                     guest_update.upgrade(data, cfg)
                 download.assert_not_called()
@@ -194,7 +194,7 @@ class GuestUpdateTests(unittest.TestCase):
 
     def test_installer_upgrade_does_not_create_or_download_first_guest(self):
         with tempfile.TemporaryDirectory() as temporary, \
-             patch.object(guest_update.ubuntu_image, 'download') as download, \
+             patch.object(guest_update.release_image, 'download') as download, \
              patch.object(backend, 'emit'), \
              patch('sys.argv', ['core', 'upgrade', '--data', temporary]):
             backend.main()
