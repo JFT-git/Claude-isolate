@@ -63,8 +63,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libguestfs-tools qemu-utils qemu-system qemu-efi-aarch64 genisoimage gnupg
           sudo chmod 0644 /boot/vmlinuz-*
-          # Use libguestfs' SLIRP fallback: passt cannot create its namespace on this runner.
-          sudo apt-get remove -y passt
           # Grant KVM only to the disposable runner user, not all users.
           if [ -e /dev/kvm ]; then sudo chown "$(id -u):$(id -g)" /dev/kvm; fi
       - name: Build signed-vendor preinstalled image

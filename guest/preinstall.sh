@@ -2,15 +2,9 @@
 # CI only: run in a fresh vendor image, never on a user's disk.
 set -eu
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
-# The cloud image's systemd-resolved stub is not running in the appliance chroot.
-# Resolve via libguestfs/QEMU's private SLIRP DNS during CI only.
-rm -f /etc/resolv.conf
-printf 'nameserver 169.254.2.3\n' > /etc/resolv.conf
-apt-get update
-apt-get install -y --no-install-recommends curl gnupg ca-certificates
-sh /tmp/claude-repositories.sh
-apt-get update
-xargs -r apt-get install -y --no-install-recommends < /tmp/claude-packages.txt
+# All dependencies were fetched through signed APT repositories in the CI
+# container. The appliance has no NIC; missing packages must fail the build.
+apt-get --no-download install -y --no-install-recommends /tmp/claude-debs/*.deb
 apt-get purge -y gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings
 while IFS= read -r pkg; do
     [ -z "$pkg" ] || test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
@@ -19,7 +13,5 @@ dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /etc/claude-prein
 # Leave cloud-init and user creation for the first local boot. No profiles or credentials.
 touch /etc/claude-preinstalled
 apt-get clean
-rm -rf /var/lib/apt/lists/* /tmp/claude-repositories.sh /tmp/claude-packages.txt
-rm -f /etc/resolv.conf
-ln -s ../run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+rm -rf /var/lib/apt/lists/* /tmp/claude-debs /tmp/claude-repositories.sh /tmp/claude-packages.txt
 systemctl mask lightdm.service ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer

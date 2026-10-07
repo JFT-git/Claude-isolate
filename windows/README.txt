@@ -11,7 +11,8 @@ consent, WSL, Hyper-V installation or manual Windows feature setup is needed.
 Keep the runtime folder with the portable ZIP's executables.
 A preinstalled Linux image is downloaded from this version’s GitHub Release,
 with resumable transfers and SHA256 pinned in the controller build. The
-guest installs XFCE, Claude Desktop, and Firefox automatically on its first boot.
+image already includes XFCE, Claude Desktop, and Firefox. First boot only
+creates the local desktop user and applies isolation and display settings.
 
 Data, sessions, and logs are in %LOCALAPPDATA%\Claude Isolate. Uninstalling the
 controller preserves that directory. Do not delete it if you need your VM data.

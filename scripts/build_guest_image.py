@@ -30,10 +30,26 @@ def build(arch, release, output):
     if destination.exists():
         raise RuntimeError('Refusing to overwrite image')
     with tempfile.TemporaryDirectory(prefix='image-build-', dir=output) as temporary:
-        disk = Path(temporary) / 'install.qcow2'
+        packages = Path(temporary) / 'claude-debs'
+        packages.mkdir()
+        # Download signed APT packages outside the appliance. An empty status
+        # inventory makes APT fetch the entire dependency closure, even packages
+        # already installed in the container. No account or CI token is mounted.
+        run(['docker', 'run', '--rm', '-v', str(packages.resolve()) + ':/out',
+             '-v', str(ROOT / 'guest') + ':/input:ro', 'ubuntu:24.04', 'sh', '-ec',
+             'export DEBIAN_FRONTEND=noninteractive; '
+             'rm -f /etc/apt/apt.conf.d/docker-clean; '
+             'apt-get update; apt-get install -y --no-install-recommends curl gnupg ca-certificates; '
+             'sh /input/repositories.sh; apt-get update; '
+             'rm -f /var/cache/apt/archives/*.deb; '
+             'xargs -r apt-get -o Dir::State::status=/dev/null --download-only '
+             'install -y --no-install-recommends < /input/packages.txt; '
+             'cp /var/cache/apt/archives/*.deb /out/'])
+        disk = Path(temporary) / 'install.qcow2' 
         run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '12G'])
         run(['virt-resize', '--format', 'qcow2', '--output-format', 'qcow2', '--expand', '/dev/sda1', str(base), str(disk)])
-        run(['virt-customize', '--format', 'qcow2', '-a', str(disk), '--memsize', '4096', '--smp', '2',
+        run(['virt-customize', '--format', 'qcow2', '-a', str(disk), '--memsize', '4096', '--smp', '2', '--no-network',
+             '--copy-in', str(packages) + ':/tmp',
              '--upload', str(ROOT / 'guest/repositories.sh') + ':/tmp/claude-repositories.sh',
              '--upload', str(ROOT / 'guest/packages.txt') + ':/tmp/claude-packages.txt',
              '--run', str(ROOT / 'guest/preinstall.sh')])
