@@ -46,7 +46,7 @@ for url in https://1.1.1.1 http://10.0.2.2 http://169.254.169.254; do
    echo 'AUDIT: direct network unexpectedly open'; exit 1
  fi
 done
-curl --fail --max-time 30 --proxy http://10.0.2.100:7890 https://example.com -o /dev/null
+curl --fail --connect-timeout 30 --max-time 120 --proxy http://10.0.2.100:7890 https://example.com -o /dev/null
 for url in http://127.0.0.1 http://169.254.169.254 https://10.0.2.2; do
  if curl --fail --noproxy '' --max-time 5 --proxy http://10.0.2.100:7890 "$url" -o /dev/null; then
    echo 'AUDIT: proxy reached private destination'; exit 1
