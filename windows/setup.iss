@@ -1,7 +1,7 @@
 [Setup]
 AppId={{F426138A-7ECA-487B-A6CD-47EB31C40462}
 AppName=Claude Isolate
-AppVersion=0.3.16
+AppVersion=0.3.17
 AppPublisher=Claude Isolate project
 AppPublisherURL=https://github.com/JFT-git/Claude-isolate
 DefaultDirName={localappdata}\Programs\Claude Isolate

@@ -68,7 +68,7 @@ jobs:
       - name: Build signed-vendor preinstalled image
         env:
           IMAGE_ARCH: ${{ matrix.arch }}
-          IMAGE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.3.16' }}
+          IMAGE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.3.17' }}
         run: python3 scripts/build_guest_image.py --arch "$IMAGE_ARCH" --release "$IMAGE_RELEASE"
       - name: Boot prepared image and verify desktop and isolation
         env:

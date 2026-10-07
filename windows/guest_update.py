@@ -227,10 +227,11 @@ def maintenance(cfg, base, directory, content):
               'echo "' + marker + '" > /dev/console\n')
     data = dict(hostname='isolated-maintenance', users=[], package_update=False,
                 growpart=dict(mode='off'), resize_rootfs=False,
-                cloud_init_modules=['bootcmd', 'write_files'], cloud_config_modules=['runcmd'],
+                cloud_init_modules=['write_files', 'bootcmd'], cloud_config_modules=['runcmd'],
                 cloud_final_modules=['scripts-user'],
-                bootcmd=[['sh', '-c', 'lsblk -nr -o MAJ:MIN /dev/vda | grep -Fx "$(findmnt -n -o MAJ:MIN /)" && echo "' + ready + '" > /dev/console']],
-                write_files=[dict(path='/payload.json', content=json.dumps(content), permissions='0600'),
+                bootcmd=[['python3', '/verify-helper-root.py', ready]],
+                write_files=[dict(path='/verify-helper-root.py', content=(environment.ROOT / 'guest/helper-root.py').read_text(), permissions='0600'),
+                             dict(path='/payload.json', content=json.dumps(content), permissions='0600'),
                              dict(path='/offline-update.py', content=(environment.ROOT / 'guest/offline-update.py').read_text(), permissions='0600'),
                              dict(path='/apply-update.sh', content=script, permissions='0700')],
                 runcmd=[['sh', '/apply-update.sh']])

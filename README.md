@@ -326,7 +326,7 @@ python3 scripts/integration_vm.py --data /absolute/path/to/new-audit-vm
 проверка графического окна на пользовательском компьютере по-прежнему полезна.
 
 
-### Готовый образ в v0.3.16
+### Готовый образ в v0.3.17
 
 GitHub Actions собирает отдельные готовые образы x86_64 и aarch64 из Ubuntu,
 проверенной по подписанному манифесту. Xfce, Claude Desktop, Firefox и зависимости
