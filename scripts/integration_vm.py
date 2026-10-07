@@ -24,9 +24,9 @@ GUEST_TEST = r'''#!/bin/sh
 set -eu
 exec > /dev/console 2>&1
 trap 'code=$?; echo "AUDIT: finished status=$code"; systemctl poweroff --no-block' EXIT
-# xwininfo is a test-only dependency; it is not shipped in the desktop.
-apt-get -o DPkg::Lock::Timeout=180 update
-apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends x11-utils
+# Desktop diagnostics are preinstalled too. Test the same no-download first
+# boot users receive; fetching all APT indexes here dominated ARM TCG runs.
+command -v xwininfo
 sleep 20
 test -f /var/lib/claude-isolation-ready
 systemctl is-active lightdm
@@ -54,10 +54,17 @@ for url in http://127.0.0.1 http://169.254.169.254 https://10.0.2.2; do
 done
 # Both actual GUI applications must create a window in the installed session.
 runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority firefox --new-window about:blank > /tmp/firefox-smoke.log 2>&1 &
-sleep 25
+# Wait for actual windows instead of assuming every emulator opens them in 25s.
+attempt=0
+while [ "$attempt" -lt 90 ]; do
+ if runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xwininfo -root -tree > /tmp/windows && grep -qi firefox /tmp/windows && grep -qi claude /tmp/windows; then
+  break
+ fi
+ attempt=$((attempt + 1))
+ sleep 2
+done
 ps -u claude -o comm= | grep -i firefox
 ps -u claude -o comm= | grep -i claude
-runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xwininfo -root -tree > /tmp/windows
 cat /tmp/windows
 grep -i firefox /tmp/windows
 grep -i claude /tmp/windows

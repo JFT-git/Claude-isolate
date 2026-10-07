@@ -75,13 +75,15 @@ jobs:
           IMAGE_ARCH: ${{ matrix.arch }}
         run: |
           python3 - <<'PYCODE'
-          import json, os, pathlib, subprocess
+          import json, os, pathlib, re, subprocess
           manifest = json.loads(pathlib.Path('dist/guest/guest-image-' + os.environ['IMAGE_ARCH'] + '.json').read_text())
           subprocess.run(['python3', 'scripts/integration_vm.py', '--data', 'reports/guest-boot',
                           '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256']], check=True)
           log = pathlib.Path('reports/guest-boot/boot.log').read_text(errors='replace')
           if 'preinstalled-image no-package-downloads' not in log:
               raise RuntimeError('Prepared image did not take the no-download setup path')
+          if re.search(r'Get:\d+ ', log):
+              raise RuntimeError('Fresh prepared guest unexpectedly downloaded packages')
           PYCODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

@@ -8,13 +8,13 @@ export NEEDRESTART_MODE=a
 systemctl mask lightdm.service
 if [ -f /etc/claude-preinstalled ]; then
   # Fail closed rather than downloading repairs for a broken release image.
-  for pkg in xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils claude-desktop firefox openssh-client; do
+  for pkg in xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils claude-desktop firefox openssh-client; do
     test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
   done
   echo 'CLAUDE-ISOLATION: preinstalled-image no-package-downloads' > /dev/console
 else
 apt-get -o DPkg::Lock::Timeout=180 update
-apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils openssh-client
+apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils openssh-client
 CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
 apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends claude-desktop firefox
