@@ -54,9 +54,13 @@ def build(arch, release, output):
              '/etc/apt/preferences.d/mozilla /out/repository-config/; '
              'chown -R "$IMAGE_OWNER" /out'])
         disk = Path(temporary) / 'install.qcow2'
-        run(['qemu-img', 'create', '-f', 'qcow2', str(disk), '12G'])
-        run(['virt-resize', '--format', 'qcow2', '--output-format', 'qcow2', '--expand', '/dev/sda1', str(base), str(disk)])
+        # Preserve the original GPT entries, offsets and BIOS boot sectors.
+        # virt-resize renumbers Ubuntu's 14/15/16/1 layout and can invalidate
+        # the embedded GRUB prefix before the kernel even starts.
+        run(['qemu-img', 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(disk)])
+        run(['qemu-img', 'resize', str(disk), '12G'])
         run(['virt-customize', '--format', 'qcow2', '-a', str(disk), '--memsize', '4096', '--smp', '2', '--no-network',
+             '--run-command', 'growpart /dev/sda 1 && resize2fs /dev/sda1',
              '--copy-in', str(packages) + ':/tmp',
              '--upload', str(ROOT / 'guest/repositories.sh') + ':/tmp/claude-repositories.sh',
              '--upload', str(ROOT / 'guest/packages.txt') + ':/tmp/claude-packages.txt',
