@@ -208,12 +208,20 @@ def maintenance(cfg, base, directory, content):
     seed_files = directory / 'seed-files'
     seed_files.mkdir()
     # An offline helper has no NIC, host mounts, gateway, clipboard, or account
-    # credentials. It mounts ONLY the old guest's ext4 partition as /dev/vdb1.
+    # credentials. It mounts ONLY the old guest root identified on /dev/vdb.
     script = ('#!/bin/sh\nset -eu\n'
               'finish() { sync; umount /target 2>/dev/null || true; systemctl --no-block poweroff; }; trap finish EXIT\n'
-              'count=0; while [ ! -b /dev/vdb1 ]; do count=$((count+1)); test "$count" -lt 120; sleep 1; done\n'
-              'test "$(blkid -s TYPE -o value /dev/vdb1)" = ext4\n'
-              'mkdir /target; mount -t ext4 -o nodev,nosuid,noexec /dev/vdb1 /target\n'
+              'count=0; target=; while [ -z "$target" ]; do\n'
+              '  for part in /dev/vdb[0-9]*; do\n'
+              '    [ -b "$part" ] || continue\n'
+              '    if [ "$(blkid -s LABEL -o value "$part")" = cloudimg-rootfs ]; then\n'
+              '      test -z "$target"; target="$part"\n'
+              '    fi\n'
+              '  done\n'
+              '  count=$((count+1)); test "$count" -lt 120; [ -n "$target" ] || sleep 1\n'
+              'done\n'
+              'test "$(blkid -s TYPE -o value "$target")" = ext4\n'
+              'mkdir /target; mount -t ext4 -o nodev,nosuid,noexec "$target" /target\n'
               'python3 /offline-update.py /target /payload.json\n'
               'sync; umount /target\n'
               'echo "' + marker + '" > /dev/console\n')
@@ -221,7 +229,7 @@ def maintenance(cfg, base, directory, content):
                 growpart=dict(mode='off'), resize_rootfs=False,
                 cloud_init_modules=['bootcmd', 'write_files'], cloud_config_modules=['runcmd'],
                 cloud_final_modules=['scripts-user'],
-                bootcmd=[['sh', '-c', 'test "$(findmnt -n -o MAJ:MIN /)" = "$(lsblk -dn -o MAJ:MIN /dev/vda1)" && echo "' + ready + '" > /dev/console']],
+                bootcmd=[['sh', '-c', 'lsblk -nr -o MAJ:MIN /dev/vda | grep -Fx "$(findmnt -n -o MAJ:MIN /)" && echo "' + ready + '" > /dev/console']],
                 write_files=[dict(path='/payload.json', content=json.dumps(content), permissions='0600'),
                              dict(path='/offline-update.py', content=(environment.ROOT / 'guest/offline-update.py').read_text(), permissions='0600'),
                              dict(path='/apply-update.sh', content=script, permissions='0700')],
