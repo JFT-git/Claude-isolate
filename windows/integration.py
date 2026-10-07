@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT))
 import environment
 import network_guard
 import ubuntu_image
+import release_image
 from windows import backend
 from windows import gnupg
 from windows.job import Job
@@ -361,6 +362,15 @@ def main():
                    resources_mode='minimal' if memory_mb == 1024 else 'economy')
         backend.write_config(path, cfg)
         core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
+        # Seed the normal digest-addressed cache from this CI run's artifact.
+        # The release URL is not published until all installation tests pass.
+        manifest = release_image.metadata(cfg['arch'])
+        artifact = ROOT / 'dist/guest' / manifest['filename']
+        if not release_image.matches(artifact, manifest):
+            raise RuntimeError('CI prepared image does not match the embedded manifest')
+        cache = path.parent / 'downloads'
+        cache.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(artifact, cache / (manifest['sha256'] + '.qcow2'))
         # Use the actual packaged first-run setup, including GPG, qemu-img,
         # image download/signature checks and the bundled ISO writer.
         with (report / 'prepare.log').open('wb') as output:

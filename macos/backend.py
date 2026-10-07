@@ -23,6 +23,7 @@ import environment
 import network_guard
 import vm_bundle
 import ubuntu_image
+import release_image
 
 
 def emit(message, **extra):
@@ -121,12 +122,12 @@ def prepare(data, cfg):
         cfg['qemu_data_dir'] = str(Path(original).resolve().parent.parent / 'share/qemu')
         write_config(data / 'environment.json', cfg)
     environment.command(cfg)  # fail before downloading if QEMU is missing
-    gpg = environment.tool('gpg')
     if Path(cfg['disk']).is_file() and Path(cfg['seed']).is_file():
         emit('Среда уже подготовлена', ready=True)
         return
-    emit('Загрузка и проверка подписанного образа Ubuntu — примерно 600 МБ')
-    base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], gpg)
+    emit('Загрузка готовой среды из GitHub Releases…')
+    base, digest = release_image.download(data / 'downloads', cfg['arch'],
+        lambda done, total: emit(f'Загрузка готовой среды: {done // 1048576} / {total // 1048576} МБ'))
     emit('Создание отдельного диска Linux')
     environment.prepare(cfg, base, digest)
     base.unlink(missing_ok=True)

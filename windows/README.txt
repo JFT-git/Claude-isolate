@@ -9,7 +9,8 @@ Click Start to prepare and boot Linux. Python, the tested QEMU x64 runtime,
 and portable GnuPG are included. No winget, Microsoft Store, administrator
 consent, WSL, Hyper-V installation or manual Windows feature setup is needed.
 Keep the runtime folder with the portable ZIP's executables.
-Ubuntu is downloaded and verified with the pinned Ubuntu signing key. The
+A preinstalled Linux image is downloaded from this version’s GitHub Release,
+with resumable transfers and SHA256 pinned in the controller build. The
 guest installs XFCE, Claude Desktop, and Firefox automatically on its first boot.
 
 Data, sessions, and logs are in %LOCALAPPDATA%\Claude Isolate. Uninstalling the

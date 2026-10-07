@@ -6,16 +6,24 @@ export NEEDRESTART_MODE=a
 # QEMU denies direct networking even before the guest firewall is installed.
 # A systemd service retries this idempotent setup after transient network errors.
 systemctl mask lightdm.service
+if [ -f /etc/claude-preinstalled ]; then
+  # Fail closed rather than downloading repairs for a broken release image.
+  for pkg in xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils claude-desktop firefox openssh-client; do
+    test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
+  done
+  echo 'CLAUDE-ISOLATION: preinstalled-image no-package-downloads' > /dev/console
+else
 apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils openssh-client
-nft -f /etc/claude-isolation.nft
-systemctl enable nftables
-install -m 600 /etc/claude-isolation.nft /etc/nftables.conf
 CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
 apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends claude-desktop firefox
 # No password prompt or Secret Service daemon inside this passwordless VM.
 apt-get -o DPkg::Lock::Timeout=180 purge -y gnome-keyring gnome-keyring-pkcs11 libpam-gnome-keyring light-locker light-locker-settings
+fi
+nft -f /etc/claude-isolation.nft
+systemctl enable nftables
+install -m 600 /etc/claude-isolation.nft /etc/nftables.conf
 for pkg in claude-desktop firefox; do
   dpkg-query -W -f='CLAUDE-ISOLATION: installed ${Package} ${Version}\n' "$pkg" > /dev/console
 done

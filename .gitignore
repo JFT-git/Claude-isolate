@@ -20,3 +20,6 @@ dist/
 reports/
 *.app/
 .DS_Store
+
+# Build-time pinned release image manifests, bundled by CI only.
+guest-image-*.json

@@ -16,10 +16,11 @@ import uuid
 import environment
 import network_guard
 import ubuntu_image
+import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.3.15'
+VERSION = '0.3.16'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
@@ -228,8 +229,9 @@ def prepare(data, cfg):
         return
     if disk.exists() or seed.exists():
         raise RuntimeError('Найдена неполная среда. Существующий диск автоматически не перезаписывается.')
-    emit('Загрузка Ubuntu и проверка подписи образа…')
-    base, digest = ubuntu_image.download(data / 'downloads', cfg['arch'], str(find_tool('gpg')))
+    emit('Загрузка готовой среды из GitHub Releases и проверка SHA256…')
+    base, digest = release_image.download(data / 'downloads', cfg['arch'],
+        lambda done, total: emit(f'Загрузка готовой среды: {done // 1048576} / {total // 1048576} МБ'))
     emit('Создание отдельного диска Linux…')
     # Persist the revision before publishing the two files; a process crash
     # after prepare must not mistake a pristine, unbooted guest for a legacy OS.
@@ -238,7 +240,7 @@ def prepare(data, cfg):
     write_config(data / 'environment.json', cfg)
     environment.prepare(cfg, base, digest)
     # Retain the signed base as a maintenance cache for future guest updates.
-    emit('Среда подготовлена. При первой загрузке Linux установит рабочий стол и приложения.')
+    emit('Среда подготовлена. Приложения уже установлены; первый запуск настроит рабочий стол.')
 
 
 def qmp(cfg, execute):

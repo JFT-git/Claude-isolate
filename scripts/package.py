@@ -26,6 +26,11 @@ def package(target, output):
             if path.is_symlink() or path.suffix in forbidden or path.name in ('environment.json', '.env'):
                 raise RuntimeError(f'Refusing to publish potentially private file: {name}')
             z.write(path, 'Claude-isolate/' + name)
+        manifests = list(ROOT.glob('guest-image-*.json'))
+        if not manifests:
+            raise RuntimeError('Missing CI prepared guest manifests')
+        for manifest in manifests:
+            z.write(manifest, 'Claude-isolate/' + manifest.name)
         z.writestr('Claude-isolate/BUILD.json', json.dumps({
             'target': target, 'python': platform.python_version(),
             'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),

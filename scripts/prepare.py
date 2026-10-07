@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 import environment
 
 import ubuntu_image
+import release_image
 
 
 def prepare(config_path, if_needed=False):
@@ -22,7 +23,7 @@ def prepare(config_path, if_needed=False):
         return
     if disk.exists() or environment.local_path(cfg['seed']).exists():
         raise RuntimeError('Existing VM will not be overwritten')
-    image, digest = ubuntu_image.download(disk.parent / 'downloads', cfg['arch'], environment.tool('gpg'))
+    image, digest = release_image.download(disk.parent / 'downloads', cfg['arch'])
     environment.prepare(cfg, image, digest)
     image.unlink(missing_ok=True)
 
