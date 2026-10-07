@@ -84,6 +84,12 @@ jobs:
               raise RuntimeError('Prepared image did not take the no-download setup path')
           PYCODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: guest-verification-${{ matrix.arch }}
+          path: reports/guest-boot/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: guest-manifest-${{ matrix.arch }}
           path: dist/guest/guest-image-*.json

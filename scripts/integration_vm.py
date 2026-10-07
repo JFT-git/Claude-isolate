@@ -24,6 +24,7 @@ set -eu
 exec > /dev/console 2>&1
 trap 'code=$?; echo "AUDIT: finished status=$code"; systemctl poweroff --no-block' EXIT
 # xwininfo is a test-only dependency; it is not shipped in the desktop.
+apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends x11-utils
 sleep 20
 test -f /var/lib/claude-isolation-ready
