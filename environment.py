@@ -158,6 +158,10 @@ def command(cfg, check=True):
         if cfg['accelerator'] not in ('whpx', 'tcg'):
             raise ValueError('Unsupported Windows accelerator')
         accel = cfg['accelerator']
+    # The launcher selects Nehalem (SSE4.2) only when the host CPU has it.
+    whpx_cpu = cfg.get('whpx_cpu', 'qemu64')
+    if whpx_cpu not in ('qemu64', 'Nehalem'):
+        raise ValueError('Unsupported WHPX CPU model')
     exe = str(local_path(cfg['qemu_executable'])) if cfg.get('qemu_executable') else (tool(f'qemu-system-{arch}') if check else f'qemu-system-{arch}')
     mode = cfg.get('network_mode', 'system')
     relay = ([sys.executable, 'relay'] if getattr(sys, 'frozen', False)
@@ -179,7 +183,7 @@ def command(cfg, check=True):
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
            # advertises AMD SVM by default, even on an Intel WHPX host.
-           '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else 'qemu64,svm=off' if accel == 'whpx' else 'max',
+           '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else whpx_cpu + ',svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
            '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
@@ -489,6 +493,10 @@ def prepare(cfg, base, digest):
     print('Environment prepared. No account credentials were copied.')
 
 
+class RestoreFailed(RuntimeError):
+    """A saved guest state could not be loaded; a normal boot may follow."""
+
+
 def main(*, raise_errors=False, expected_exit_ip=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'prepare', 'start', 'plan', 'relay', 'country'])
@@ -527,6 +535,14 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                         raise RuntimeError('Run prepare first')
                 with exclusive(local_path(cfg['disk']).with_suffix('.launch.lock')), tempfile.TemporaryDirectory(prefix='claude-network-') as directory:
                     lease = Path(directory) / 'lease.json'
+                    restore = None
+                    if platform.system() == 'Windows':
+                        from windows import state as saved_state
+                        # Checked under the disk lock: a saved state is valid
+                        # only for this exact disk content and QEMU command.
+                        if saved_state.usable(cfg, cmd):
+                            restore = saved_state.uri(cfg)
+                            cmd = cmd + ['-incoming', 'defer']
                     status_path = cfg.get('network_status')
                     if status_path:
                         Path(status_path).with_suffix('.revoked').unlink(missing_ok=True)
@@ -572,27 +588,32 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                             if platform.system() == 'Windows':
                                 from windows.serial_gateway import Gateway
                                 from windows.control import Control
-                                control = Control(cfg, proc)
+                                control = Control(cfg, proc, restore=restore)
                                 bridge = Gateway(cfg, env)
                                 control.on_event = bridge.port_event
                                 control.start()
                                 bridge.start()
                                 control.wait_ready()
                             if proc.poll() is None:
-                                print(json.dumps({'message': 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
+                                print(json.dumps({'message': 'Linux восстановлен' if control and control.restored
+                                                  else 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
                             proc.wait()
                             if proc.returncode:
                                 error = subprocess.CalledProcessError(proc.returncode, cmd)
                                 error.initial_exit_ip = result['ip']
                                 error.network_locked = lease.with_suffix('.revoked').exists()
                                 raise error
-                        except BaseException:
+                            if control and control.suspended:
+                                saved_state.record(cfg, cmd)
+                        except BaseException as error:
                             proc.terminate()
                             try:
                                 proc.wait(timeout=5)
                             except subprocess.TimeoutExpired:
                                 proc.kill()
                                 proc.wait()
+                            if restore and not (control and control.restored) and not isinstance(error, KeyboardInterrupt):
+                                raise RestoreFailed('Сохранённое состояние Linux не загрузилось') from error
                             raise
                     finally:
                         network_guard.revoke(lease, status_path, 'Среда остановлена')

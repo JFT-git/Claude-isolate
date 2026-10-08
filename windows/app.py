@@ -59,8 +59,11 @@ class Application:
         self.start_button.pack(side='left', padx=(0, 8))
         self.stop_button = ttk.Button(buttons, text='Остановить', command=self.stop)
         self.stop_button.pack(side='left', padx=(0, 8))
-        self.restart_button = ttk.Button(buttons, text='Перезапустить среду', command=lambda: self.stop(restart=True))
-        self.restart_button.pack(side='left')
+        self.restart_button = ttk.Button(buttons, text='Перезапустить',
+                                         command=lambda: self.stop('stop', restart=True))
+        self.restart_button.pack(side='left', padx=(0, 8))
+        self.poweroff_button = ttk.Button(buttons, text='Выключить полностью', command=lambda: self.stop('stop'))
+        self.poweroff_button.pack(side='left')
         resources = ttk.Frame(frame)
         resources.pack(fill='x', pady=(18, 8))
         ttk.Label(resources, text='Ресурсы:').pack(side='left')
@@ -86,8 +89,10 @@ class Application:
         self.acceleration.bind('<<ComboboxSelected>>', self.set_acceleration)
         ttk.Button(frame, text='Открыть папку среды и журналы',
                    command=lambda: os.startfile(str(data))).pack(anchor='w', pady=(8, 0))
-        ttk.Label(frame, text='Первый запуск загружает Ubuntu и устанавливает приложения. '
-                  'Python, QEMU и GnuPG включены. Компоненты Windows включать не нужно.',
+        ttk.Label(frame, text='Первый запуск загружает готовую среду Linux. Python, QEMU и GnuPG включены. '
+                  'Компоненты Windows включать не нужно. «Остановить» сохраняет память Linux '
+                  'в папке среды, и следующий запуск продолжает работу за секунды. '
+                  '«Выключить полностью» завершает Linux и удаляет сохранённое состояние.',
                   wraplength=640).pack(anchor='w', pady=(14, 0))
         root.protocol('WM_DELETE_WINDOW', self.close)
         self.poll()
@@ -149,39 +154,52 @@ class Application:
         except (OSError, RuntimeError) as error:
             self.message.set(str(error))
 
-    def stop(self, restart=False):
-        if not self.vm_started or self.stopping:
+    def stop(self, action='suspend', restart=False):
+        if self.stopping or self.auxiliary:
+            return
+        if not self.vm_started:
+            if action == 'stop' and not self.task:
+                # Discard a saved state while Linux is not running.
+                self.auxiliary = subprocess.Popen(worker_command('stop', self.data),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
+                    errors='replace', creationflags=subprocess.CREATE_NO_WINDOW)
+                threading.Thread(target=self.finish, args=(self.auxiliary, 30), daemon=True).start()
             return
         self.restarting = restart
         self.stopping = True
-        self.message.set('Закрываю сеть и корректно завершаю Linux…')
+        self.message.set('Закрываю сеть и сохраняю состояние Linux…' if action == 'suspend'
+                         else 'Закрываю сеть и корректно завершаю Linux…')
         try:
-            self.auxiliary = subprocess.Popen(worker_command('stop', self.data),
+            self.auxiliary = subprocess.Popen(worker_command(action, self.data),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8',
                 errors='replace', creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError as error:
             self.message.set(str(error))
             self.stopping = self.restarting = self.closing = False
             return
-        def finish():
-            process = self.auxiliary
+        # Saving memory takes up to minutes under software emulation.
+        threading.Thread(target=self.finish, args=(self.auxiliary, 900 if action == 'suspend' else 10),
+                         daemon=True).start()
+
+    def finish(self, process, timeout):
+        try:
+            output, _ = process.communicate(timeout=timeout)
             try:
-                output, _ = process.communicate(timeout=10)
-                if process.returncode:
-                    try:
-                        output = json.loads(output.splitlines()[-1])['message']
-                    except (ValueError, KeyError, IndexError):
-                        pass
-                    self.messages.put({'error': True, 'stop_error': True,
-                                       'message': output.strip() or 'Linux пока не отвечает на остановку. Повторите позже.'})
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.communicate()
+                message = json.loads(output.splitlines()[-1])['message']
+            except (ValueError, KeyError, IndexError):
+                message = output.strip()
+            if process.returncode:
                 self.messages.put({'error': True, 'stop_error': True,
-                                   'message': 'Linux пока не отвечает на остановку. Повторите позже.'})
-            finally:
-                self.messages.put({'stop_finished': True})
-        threading.Thread(target=finish, daemon=True).start()
+                                   'message': message or 'Linux пока не отвечает на остановку. Повторите позже.'})
+            elif message and not self.vm_started:
+                self.messages.put({'message': message})
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            self.messages.put({'error': True, 'stop_error': True,
+                               'message': 'Linux пока не отвечает на остановку. Повторите позже.'})
+        finally:
+            self.messages.put({'stop_finished': True})
 
     def close(self):
         if self.vm_started:
@@ -213,6 +231,10 @@ class Application:
             if value.get('accelerator') == 'tcg':
                 self.network.set('Совместимый режим без гипервизора: загрузка и установка '
                                  'могут занимать больше времени. VPN должен оставаться включён.')
+                if self.acceleration.current() == 0:
+                    self.memory_note.set('Необязательно: компонент Windows «Платформа низкоуровневой '
+                                         'оболочки Windows» и перезагрузка ускоряют Linux в несколько раз. '
+                                         'Без него всё работает.')
         if self.task and self.task.poll() is not None:
             returncode = self.task.returncode
             self.task = None
@@ -241,6 +263,12 @@ class Application:
         self.start_button.configure(state='disabled' if self.task or self.closing else 'normal')
         for button in (self.stop_button, self.restart_button):
             button.configure(state='normal' if running and not self.auxiliary else 'disabled')
+        if not self.vm_started and not self.task:
+            _, cfg = backend.config(self.data)
+            saved = backend.status(cfg)['saved_state']
+        else:
+            saved = False
+        self.poweroff_button.configure(state='normal' if (running or saved) and not self.auxiliary else 'disabled')
         self.resources.configure(state='disabled' if self.task else 'readonly')
         self.acceleration.configure(state='disabled' if self.task else 'readonly')
         self.root.after(500, self.poll)

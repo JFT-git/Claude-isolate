@@ -131,7 +131,11 @@ class WindowsBackendTests(unittest.TestCase):
             _, cfg = backend.config(Path(temporary))
             with patch.object(environment.platform, 'system', return_value='Windows'):
                 cmd = environment.command(dict(cfg, accelerator='whpx'), check=False)
-            self.assertEqual(cmd[cmd.index('-cpu') + 1], 'qemu64,svm=off')
+                self.assertEqual(cmd[cmd.index('-cpu') + 1], 'qemu64,svm=off')
+                cmd = environment.command(dict(cfg, accelerator='whpx', whpx_cpu='Nehalem'), check=False)
+                self.assertEqual(cmd[cmd.index('-cpu') + 1], 'Nehalem,svm=off')
+                with self.assertRaises(ValueError):
+                    environment.command(dict(cfg, accelerator='whpx', whpx_cpu='host,+avx512f'), check=False)
 
     def test_recovery_cannot_launch_if_exit_ip_changed(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -84,7 +84,10 @@ def maintenance_memory():
 
 
 def configure_resources(path, cfg):
-    if cfg.get('resources_mode') == 'auto':
+    from windows import state
+    # Keep the memory size a saved state was taken with; recalculating from
+    # the currently free memory would invalidate the fast start.
+    if cfg.get('resources_mode') == 'auto' and not state.paths(cfg)[0].exists():
         cfg.update(automatic_resources())
     reserve = 1024 if cfg.get('resources_mode') == 'auto' else 512
     warn_memory(cfg['memory_mb'], reserve)
@@ -184,6 +187,18 @@ def acceleration():
         return 'tcg'
 
 
+def whpx_cpu():
+    # The guest CPU model exposes SSE4.1/4.2 to browsers only if the host has
+    # them; SLAT-capable AMD K10 processors run WHPX without SSE4.1.
+    try:
+        present = ctypes.WinDLL('kernel32').IsProcessorFeaturePresent
+        present.argtypes = [ctypes.c_uint32]
+        present.restype = ctypes.c_int
+        return 'Nehalem' if present(37) and present(38) else 'qemu64'
+    except (OSError, AttributeError):
+        return 'qemu64'
+
+
 def select_acceleration(cfg):
     mode = cfg.get('acceleration_mode', 'auto')
     if mode not in ACCELERATION_MODES:
@@ -195,12 +210,21 @@ def select_acceleration(cfg):
 
 def start_environment(path, cfg):
     cfg['accelerator'] = select_acceleration(cfg)
+    cfg['whpx_cpu'] = whpx_cpu() if os.name == 'nt' else 'qemu64'
     write_config(path, cfg)
     emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
     sys.argv = [sys.argv[0], 'start', '--config', str(path)]
     started = time.monotonic()
     try:
-        environment.main(raise_errors=True)
+        try:
+            environment.main(raise_errors=True)
+        except environment.RestoreFailed:
+            from windows import state
+            state.discard(cfg)
+            emit('Быстрый запуск не удался. Запускаю Linux обычным способом; диск и файлы сохранены.',
+                 running=False)
+            started = time.monotonic()
+            environment.main(raise_errors=True)
     except subprocess.CalledProcessError as error:
         # environment has already reaped QEMU, closed the private SSH bridge,
         # revoked the lease and released the disk lock before we retry.
@@ -249,11 +273,20 @@ def qmp(cfg, execute):
 
 
 def status(cfg, running=False):
+    from windows import state as saved_state
+    from windows.control import paths as control_paths
     state = {'ready': Path(cfg['disk']).is_file() and Path(cfg['seed']).is_file(),
-             'running': running, 'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus']}
+             'running': running, 'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus'],
+             'saved_state': saved_state.paths(cfg)[0].is_file()}
     if not running:
-        state['message'] = 'Готова к запуску' if state['ready'] else 'Нужно подготовить среду'
+        state['message'] = ('Готова к быстрому запуску: Linux продолжит работу с места остановки'
+                            if state['ready'] and state['saved_state'] else
+                            'Готова к запуску' if state['ready'] else 'Нужно подготовить среду')
         return state
+    try:
+        restored = bool(network_guard.read_state(control_paths(cfg)['ready']).get('restored'))
+    except (OSError, ValueError, AttributeError):
+        restored = False
     try:
         with Path(cfg['boot_log']).open('rb') as source:
             source.seek(0, os.SEEK_END)
@@ -264,7 +297,8 @@ def status(cfg, running=False):
     # The installation marker is emitted only on the first boot. Later boots
     # already have the desktop and must not show installation indefinitely.
     plain_boot = re.sub(r'\x1b\[[0-9;]*m', '', boot)
-    desktop_ready = ('CLAUDE-ISOLATION: desktop-ready' in plain_boot
+    # A restored guest does not boot, so its serial log stays empty.
+    desktop_ready = (restored or 'CLAUDE-ISOLATION: desktop-ready' in plain_boot
                      or 'Started lightdm.service - Light Display Manager.' in plain_boot)
     state['message'] = ('Рабочий стол готов' if desktop_ready
                         else 'Linux запускается и устанавливает компоненты…')
@@ -289,7 +323,7 @@ def status(cfg, running=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version='Claude Isolate ' + VERSION)
-    parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'resources-auto', *RESOURCE_PROFILES,
+    parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'suspend', 'resources-auto', *RESOURCE_PROFILES,
                                          'accel-auto', 'accel-tcg', 'accel-whpx'])
     parser.add_argument('--data', type=Path, required=True)
     parser.add_argument('--log', type=Path, help='Installer update log (UTF-8)')
@@ -308,14 +342,33 @@ def main():
             emit('Существующей среды нет. Linux установится при первом запуске.')
             return
         data.mkdir(parents=True, exist_ok=True)
+        if args.action == 'suspend':
+            _, cfg = config(data)
+            network_guard.revoke(None, cfg['network_status'], 'Сохранение состояния Linux')
+            qmp(cfg, 'suspend')
+            emit('Состояние Linux сохранено. Следующий запуск продолжит работу с этого места.')
+            return
         if args.action == 'stop':
+            from windows import state
             _, cfg = config(data)
             network_guard.revoke(None, cfg['network_status'], 'Завершение Linux')
-            qmp(cfg, 'system_powerdown')
+            try:
+                qmp(cfg, 'system_powerdown')
+            except RuntimeError:
+                if not state.paths(cfg)[0].exists():
+                    raise
+                state.discard(cfg)
+                emit('Сохранённое состояние удалено. Следующий запуск будет обычной загрузкой.')
+                return
+            state.discard(cfg)
             emit('Linux завершает работу…')
             return
         with exclusive(data / 'session.lock'):
             path, cfg = config(data)
+            if args.action.startswith('accel-') or args.action == 'resources-auto' or args.action in RESOURCE_PROFILES:
+                # A saved state matches only the old memory and accelerator.
+                from windows import state
+                state.discard(cfg)
             if args.action.startswith('accel-'):
                 cfg['acceleration_mode'] = args.action.removeprefix('accel-')
                 cfg.pop('whpx_failed', None)

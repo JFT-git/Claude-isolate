@@ -18,7 +18,7 @@ from network_guard import read_state, write_state
 from session_lock import exclusive
 from windows.pipe import NamedPipe
 
-COMMANDS = ('query-status', 'query-mice', 'system_powerdown')
+COMMANDS = ('query-status', 'query-mice', 'system_powerdown', 'suspend')
 
 
 def paths(cfg):
@@ -27,7 +27,9 @@ def paths(cfg):
             for key in ('ready', 'request', 'response')}
 
 
-def request(cfg, execute, timeout=10):
+def request(cfg, execute, timeout=None):
+    if timeout is None:
+        timeout = 900 if execute == 'suspend' else 10
     if execute not in COMMANDS:
         raise ValueError('Unsupported Windows control command')
     files = paths(cfg)
@@ -53,8 +55,13 @@ def request(cfg, execute, timeout=10):
 
 
 class Control:
-    def __init__(self, cfg, process, reader_factory=None, connector=None):
+    def __init__(self, cfg, process, reader_factory=None, connector=None, restore=None):
         self.cfg, self.process = cfg, process
+        # file: URI of a saved state to load into a QEMU started with
+        # -incoming defer; None for a normal boot.
+        self.restore = restore
+        self.restored = False
+        self.suspended = False
         self.files = paths(cfg)
         self.session = uuid.uuid4().hex
         self.stop = threading.Event()
@@ -72,6 +79,8 @@ class Control:
         self.thread.start()
 
     def wait_ready(self, timeout=60):
+        if self.restore:
+            timeout = max(timeout, 600)
         deadline = time.monotonic() + timeout
         while not self.ready.wait(.05):
             if self.process.poll() is not None:
@@ -79,7 +88,7 @@ class Control:
             if self.error:
                 raise RuntimeError('Не удалось открыть канал управления QEMU: ' + str(self.error))
             if time.monotonic() >= deadline:
-                raise RuntimeError('QEMU не подготовил канал управления за 60 секунд')
+                raise RuntimeError('QEMU не подготовил канал управления вовремя')
         return True
 
     def read_replies(self, pipe):
@@ -110,10 +119,15 @@ class Control:
         self.reader = threading.Thread(target=self.read_replies, args=(stream,), daemon=True)
         self.reader.start()
 
-    def exchange(self, pipe, execute):
+    def exchange(self, pipe, execute, arguments=None, timeout=10):
         identity = uuid.uuid4().hex
-        pipe.write(json.dumps(dict(execute=execute, id=identity)).encode() + b'\n')
-        deadline = time.monotonic() + 10
+        message = dict(execute=execute, id=identity)
+        if arguments is not None:
+            message['arguments'] = arguments
+        data = json.dumps(message).encode() + b'\n'
+        while data:
+            data = data[pipe.write(data):]
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 reply = self.replies.get(timeout=.1)
@@ -135,7 +149,9 @@ class Control:
         self.start_reader(pipe)
         self.exchange(pipe, 'qmp_capabilities')
         self.exchange(pipe, 'query-status')
-        write_state(self.files['ready'], dict(session=self.session, ready=True))
+        if self.restore:
+            self.load(pipe)
+        write_state(self.files['ready'], dict(session=self.session, ready=True, restored=self.restored))
         self.ready.set()
         last = None
         while not self.stop.wait(.05) and self.process.poll() is None:
@@ -153,9 +169,65 @@ class Control:
             reply = dict(session=self.session, id=last)
             if command.get('execute') not in COMMANDS or set(command) != {'session', 'id', 'execute'}:
                 reply['error'] = 'Unsupported Windows control command'
+            elif command['execute'] == 'suspend':
+                try:
+                    reply['return'] = self.save(pipe)
+                except RuntimeError as error:
+                    reply['error'] = str(error)
+                write_state(self.files['response'], reply)
+                if self.suspended:
+                    # QEMU exits without answering; its exit ends this loop.
+                    try:
+                        data = json.dumps(dict(execute='quit', id=uuid.uuid4().hex)).encode() + b'\n'
+                        while data:
+                            data = data[pipe.write(data):]
+                    except OSError:
+                        pass
+                continue
             else:
                 reply['return'] = self.exchange(pipe, command['execute'])
             write_state(self.files['response'], reply)
+
+    def wait_migration(self, pipe, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = self.exchange(pipe, 'query-migrate').get('status')
+            if status in ('completed', 'failed', 'cancelled'):
+                return status
+            time.sleep(.2)
+        return 'timeout'
+
+    def load(self, pipe):
+        """Load the saved guest into this QEMU (started with -incoming defer)."""
+        self.exchange(pipe, 'migrate-incoming', {'uri': self.restore})
+        status = self.wait_migration(pipe, 600)
+        if status != 'completed':
+            raise RuntimeError('Сохранённое состояние не загрузилось: ' + status)
+        # The source was paused before saving; run the restored guest.
+        self.exchange(pipe, 'cont')
+        self.restored = True
+        # The guest now changes the disk; its saved memory is obsolete.
+        from windows import state
+        state.discard(self.cfg)
+
+    def save(self, pipe):
+        """Pause the guest and write its memory and devices to the state file."""
+        from windows import state
+        if not state.supported(self.cfg):
+            raise RuntimeError('Путь папки среды не поддерживает быстрый запуск')
+        state.discard(self.cfg)
+        self.exchange(pipe, 'stop')
+        try:
+            self.exchange(pipe, 'migrate', {'uri': state.uri(self.cfg)})
+            status = self.wait_migration(pipe, 900)
+        except RuntimeError:
+            status = 'failed'
+        if status != 'completed':
+            state.discard(self.cfg)
+            self.exchange(pipe, 'cont')
+            raise RuntimeError('Не удалось сохранить состояние Linux: ' + status)
+        self.suspended = True
+        return {'saved': True}
 
     def run(self):
         pipe = None

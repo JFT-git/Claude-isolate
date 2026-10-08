@@ -284,6 +284,9 @@ def upgrade(data, cfg):
         if cfg.get('guest_revision') == REVISION and cfg.get('guest_gateway_version') == GUEST_GATEWAY_VERSION:
             return
         emit('Обновляю существующий Linux-диск. Файлы и настройки сохраняются…')
+        # Saved memory would not match the updated disk.
+        from windows import state
+        state.discard(cfg)
         info = json.loads(image_command(cfg, 'info', '--output=json', str(disk)))
         if info.get('format') != 'qcow2' or info.get('backing-filename'):
             raise RuntimeError('Автоматическое обновление требует отдельного диска qcow2 без backing-файла.')

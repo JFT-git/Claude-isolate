@@ -17,6 +17,7 @@ from windows.pipe import gateway_pipe
 
 PORT_ID = 'gatewayport'
 SYNC_PREFIX = b'\x00CLAUDE-SYNC-'
+RESET_MARKER = b'\x00CLAUDE-RESET\n'
 SYNC_MARKER = re.compile(re.escape(SYNC_PREFIX) + rb'([0-9a-f]{32})\n')
 
 
@@ -205,7 +206,9 @@ class Gateway:
             markers = list(SYNC_MARKER.finditer(buffer))
             if markers:
                 nonce = markers[-1].group(1)
-                acknowledgement = b'\x00CLAUDE-ACK-' + nonce + b'\n'
+                # Our clock lets a restored guest correct its time.
+                acknowledgement = (b'\x00CLAUDE-ACK-' + nonce + b' '
+                                   + str(int(time.time() * 1000)).encode() + b'\n')
                 while acknowledgement:
                     acknowledgement = acknowledgement[stream.send(acknowledgement):]
                 return nonce, buffer[markers[-1].end():]
@@ -222,6 +225,11 @@ class Gateway:
         # The guest restarts OpenSSH after a lost session; accept each new
         # session on the same serial stream for the lifetime of the VM.
         carry = b''
+        # End any session the guest still holds from before this process
+        # started (a restored VM); a new guest proxy discards this marker.
+        data = RESET_MARKER
+        while data:
+            data = data[stream.send(data):]
         while not self.stop.is_set() and not stream.closed:
             session = None
             try:

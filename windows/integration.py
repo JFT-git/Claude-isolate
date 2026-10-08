@@ -197,6 +197,12 @@ if fixture.exists():
         time.sleep(5)
     print('WINDOWS-INTEGRATION: USERDATA-PRESERVED', flush=True)
     print('WINDOWS-INTEGRATION: GUEST-UPDATE-OK', flush=True)
+    # The next boot stays running for the saved-state test.
+    keep = pathlib.Path('/var/lib/claude-isolate/ci-keep-running')
+    if not keep.exists():
+        keep.touch()
+        subprocess.run(['systemctl', 'enable', 'ci-net-loop.service'], check=True)
+        subprocess.run(['systemctl', '--no-block', 'poweroff'], check=True)
 else:
     import json
     files = {'Documents/preserved.txt': b'User document before upgrade\\n',
@@ -219,6 +225,25 @@ else:
     pathlib.Path('/var/lib/claude-isolate/updated-@REVISION@').unlink(missing_ok=True)
     print('WINDOWS-INTEGRATION: LEGACY-GUEST-PREPARED', flush=True)
 '''.replace('@REVISION@', REVISION)
+
+NET_LOOP = '''import socket, ssl, time
+while True:
+    try:
+        stream = socket.create_connection(('10.0.2.100', 7890), timeout=20)
+        stream.sendall(b'CONNECT www.cloudflare.com:443 HTTP/1.1\\r\\n\\r\\n')
+        reply = stream.recv(4096)
+        if not reply.startswith(b'HTTP/1.1 200'):
+            stream.close()
+            raise RuntimeError(reply[:16])
+        with ssl.create_default_context().wrap_socket(stream, server_hostname='www.cloudflare.com') as tls:
+            tls.sendall(b'GET /cdn-cgi/trace HTTP/1.1\\r\\nHost: www.cloudflare.com\\r\\nConnection: close\\r\\n\\r\\n')
+            if b'ip=' not in tls.recv(4096):
+                raise RuntimeError('no trace')
+        print('WINDOWS-INTEGRATION: NET-OK', int(time.time()), flush=True)
+    except Exception as error:
+        print('WINDOWS-INTEGRATION: NET-FAIL', error, flush=True)
+    time.sleep(10)
+'''
 
 
 def install_guest_update(directory, data, report):
@@ -250,6 +275,105 @@ def install_guest_update(directory, data, report):
     if environment.load_config(path).get('guest_update_snapshot') != snapshot:
         raise RuntimeError('Installing the same version repeated the guest migration')
     return updated
+
+
+def start_core(core, path, report, name):
+    output = (report / (name + '.log')).open('wb')
+    process = subprocess.Popen([str(core), 'start', '--data', str(path.parent), '--start-gate'],
+                               stdin=subprocess.PIPE, stdout=output, stderr=subprocess.STDOUT,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
+    process.stdin.write(b'GO\n')
+    process.stdin.flush()
+    process.stdin.close()
+    return process, output
+
+
+def boot_text(cfg):
+    try:
+        return re.sub(r'\x1b\[[0-9;]*m', '', Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        return ''
+
+
+def wait_for(condition, process, timeout, what):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if process.poll() is not None:
+            raise RuntimeError(what + ': launcher exited with ' + str(process.returncode))
+        if time.monotonic() >= deadline:
+            raise RuntimeError(what + ': timed out')
+        time.sleep(1)
+
+
+def network_after(cfg):
+    # The guest prints its own Unix time with every successful gateway HTTPS.
+    for line in reversed(boot_text(cfg).splitlines()):
+        match = re.search(r'WINDOWS-INTEGRATION: NET-OK (\d+)', line)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def run_fast_start(core, path, cfg, report):
+    """Save a running guest, restore it, and verify the network and clock."""
+    from windows import state
+    report.mkdir(parents=True, exist_ok=True)
+    job = Job()
+    measured = {}
+    process = output = None
+    try:
+        process, output = start_core(core, path, report, 'boot-3')
+        job.assign(process)
+        wait_for(lambda: 'CLAUDE-ISOLATION: desktop-ready' in boot_text(cfg)
+                 and network_after(cfg) is not None, process, 1800, 'Cold boot before saving')
+        shutil.copy2(cfg['boot_log'], report / 'boot-3.boot.log')
+        started = time.monotonic()
+        saved = subprocess.run([str(core), 'suspend', '--data', str(path.parent)], capture_output=True,
+                               timeout=900, creationflags=subprocess.CREATE_NO_WINDOW)
+        (report / 'suspend.log').write_bytes(saved.stdout + saved.stderr)
+        if saved.returncode:
+            raise RuntimeError('Saving the running guest failed: ' + saved.stdout.decode(errors='replace')[-2000:])
+        process.wait(timeout=300)
+        output.close()
+        measured['suspend_seconds'] = round(time.monotonic() - started, 1)
+        if process.returncode or not all(item.is_file() for item in state.paths(cfg)):
+            raise RuntimeError('No saved state after suspending')
+        measured['state_mib'] = state.paths(cfg)[0].stat().st_size // 1048576
+        time.sleep(30)
+        started = time.monotonic()
+        process, output = start_core(core, path, report, 'boot-4')
+        job.assign(process)
+        from windows.control import paths as control_paths
+        def restored():
+            try:
+                return bool(network_guard.read_state(control_paths(cfg)['ready']).get('restored'))
+            except (OSError, ValueError, AttributeError):
+                return False
+        wait_for(restored, process, 600, 'Restoring the saved guest')
+        measured['restore_seconds'] = round(time.monotonic() - started, 1)
+        if state.paths(cfg)[0].exists():
+            raise RuntimeError('A restored guest kept its single-use saved state')
+        wait_for(lambda: network_after(cfg) is not None, process, 300, 'Gateway HTTPS after restore')
+        measured['network_after_restore_seconds'] = round(time.monotonic() - started, 1)
+        guest_time = network_after(cfg)
+        measured['clock_skew_seconds'] = round(time.time() - guest_time, 1)
+        if abs(measured['clock_skew_seconds']) > 30:
+            raise RuntimeError('Restored guest clock was not corrected: ' + str(measured['clock_skew_seconds']))
+        shutil.copy2(cfg['boot_log'], report / 'boot-4.boot.log')
+        stopped = subprocess.run([str(core), 'stop', '--data', str(path.parent)], capture_output=True,
+                                 timeout=60, creationflags=subprocess.CREATE_NO_WINDOW)
+        if stopped.returncode:
+            raise RuntimeError('Power-off after restore failed')
+        process.wait(timeout=600)
+    finally:
+        network_guard.revoke(None, cfg['network_status'])
+        job.close()
+        if output:
+            output.close()
+        if Path(cfg['boot_log']).is_file():
+            shutil.copy2(cfg['boot_log'], report / 'boot.log')
+    (report / 'fast-start.json').write_text(json.dumps(measured), encoding='utf-8')
+    return measured
 
 
 def run_guest(core, path, cfg, report, desktop):
@@ -442,7 +566,15 @@ def main():
                             '[Service]\nType=oneshot\nTimeoutStartSec=300\n'
                             'StandardOutput=journal+console\nStandardError=journal+console\n'
                             'ExecStart=/usr/bin/python3 /ci-probe.py\n'
-                            'ExecStopPost=/usr/bin/systemctl --no-block poweroff\n'
+                            'ExecStopPost=/bin/sh -c "test -e /var/lib/claude-isolate/ci-keep-running || '
+                            'systemctl --no-block poweroff"\n'
+                            '[Install]\nWantedBy=multi-user.target\n'), 'permissions': '0644'})
+            cloud_data['write_files'].append({'path': '/ci-net-loop.py', 'content': NET_LOOP, 'permissions': '0600'})
+            cloud_data['write_files'].append({'path': '/etc/systemd/system/ci-net-loop.service',
+                'content': ('[Unit]\nDescription=Report gateway HTTPS and guest time\n'
+                            'After=claude-gateway.service\n[Service]\nType=simple\n'
+                            'StandardOutput=journal+console\nStandardError=journal+console\n'
+                            'ExecStart=/usr/bin/python3 /ci-net-loop.py\n'
                             '[Install]\nWantedBy=multi-user.target\n'), 'permissions': '0644'})
             cloud_data['runcmd'] += [['systemctl', 'daemon-reload'],
                                     ['systemctl', 'enable', 'ci-reboot-probe.service'],
@@ -480,6 +612,7 @@ def main():
         # Retain the original evidence names for existing artifact consumers.
         for file in evidence.iterdir():
             shutil.copy2(file, report / file.name)
+        fast_start = run_fast_start(core, path, cfg, report / 'fast-start') if args.desktop else None
         timings = []
         for cycle, boot_text in enumerate(boots):
             plain = re.sub(r'\x1b\[[0-9;]*m', '', boot_text)
@@ -497,6 +630,11 @@ def main():
                     output.write(f'- Boot {cycle + 1}: kernel {measured.get("kernel_started_seconds")} s, '
                                  f'desktop {measured.get("desktop_ready_seconds")} s, '
                                  f'guest: {measured["guest_startup"]}, gateway connect ms: {measured["gateway_connect_ms"]}\n')
+                if fast_start:
+                    output.write(f'- Fast start: save {fast_start["suspend_seconds"]} s ({fast_start["state_mib"]} MiB), '
+                                 f'restore {fast_start["restore_seconds"]} s, gateway HTTPS after '
+                                 f'{fast_start["network_after_restore_seconds"]} s, clock skew '
+                                 f'{fast_start["clock_skew_seconds"]} s\n')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus'],
                   'guest_display': 'gtk', 'bundled_runtime': True, 'external_tools_removed_from_path': True, 'automatic_desktop_verified': args.desktop,
@@ -509,6 +647,7 @@ def main():
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
                   'public_https_connections': boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK'),
                   'boot_timings': timings,
+                  'fast_start': fast_start,
                   'seconds': round(time.monotonic() - started, 1)}
         (report / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print(json.dumps(result))
