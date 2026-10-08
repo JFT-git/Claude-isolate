@@ -29,7 +29,7 @@ def build(output, arch, analysis_only=False):
     (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleExecutable='ClaudeEnvironment', CFBundleIdentifier='local.claude.environment',
         CFBundleName='Claude Environment', CFBundlePackageType='APPL',
-        CFBundleShortVersionString='0.3.17', CFBundleVersion='17',
+        CFBundleShortVersionString='0.3.18', CFBundleVersion='18',
         LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True)))
     cache = root / 'build/modulecache' / arch
     cache.mkdir(parents=True, exist_ok=True)
