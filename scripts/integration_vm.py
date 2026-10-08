@@ -32,6 +32,11 @@ test -f /var/lib/claude-isolation-ready
 systemctl is-active lightdm
 test "$(systemctl is-enabled ssh.socket)" = masked
 test "$(systemctl is-enabled ssh.service)" = masked
+test "$(systemctl show -p LoadState --value console-setup.service)" = masked
+test -f /etc/udev/rules.d/90-console-setup.rules
+test ! -s /etc/udev/rules.d/90-console-setup.rules
+systemd-analyze | sed 's/^/AUDIT-TIMING: /'
+systemd-analyze critical-chain graphical.target | sed 's/^/AUDIT-TIMING: /'
 for pkg in claude-desktop firefox xfce4-session; do
  dpkg-query -W -f='${Package} ${Version} ${db:Status-Status}\n' "$pkg"
 done

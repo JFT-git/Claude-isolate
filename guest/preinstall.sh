@@ -25,8 +25,21 @@ done < /tmp/claude-packages.txt
 dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' > /etc/claude-preinstalled-packages.tsv
 # Leave cloud-init and user creation for the first local boot. No profiles or credentials.
 touch /etc/claude-preinstalled
+# Under software emulation every boot-time job competes with the desktop.
+# Empty unit files mask services; offline updates write the same files.
+# The console keymap udev rule rebuilds an unused text-console keymap
+# (about 30 s in TCG) and delays the display manager.
+while IFS= read -r unit; do
+    [ -z "$unit" ] || { rm -f "/etc/systemd/system/$unit"; : > "/etc/systemd/system/$unit"; }
+done < /tmp/claude-quiet-units.txt
+: > /etc/udev/rules.d/90-console-setup.rules
+for service in apt-daily apt-daily-upgrade; do
+    install -d "/etc/systemd/system/$service.service.d"
+    printf '[Service]\nNice=19\nCPUSchedulingPolicy=idle\nIOSchedulingClass=idle\n' \
+        > "/etc/systemd/system/$service.service.d/50-idle.conf"
+done
 apt-get clean
-rm -rf /var/lib/apt/lists/* /tmp/claude-debs /tmp/claude-repositories.sh /tmp/claude-packages.txt
+rm -rf /var/lib/apt/lists/* /tmp/claude-debs /tmp/claude-repositories.sh /tmp/claude-packages.txt /tmp/claude-quiet-units.txt
 systemctl mask lightdm.service ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer
 # Firefox and Claude use signed DEB packages, so the cloud image's Snap/LXD
 # bootstrap and network entropy client are unnecessary background work.

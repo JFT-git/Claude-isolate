@@ -46,6 +46,11 @@ class GuestUpdateTests(unittest.TestCase):
             self.assertNotIn('"old"', (root / 'etc/environment').read_text())
             self.assertEqual((root / 'etc/claude-isolate/revision').read_text().strip(), guest_update.REVISION)
             self.assertTrue((root / 'etc/systemd/system/multi-user.target.wants/claude-gateway.service').is_symlink())
+            for unit in (environment.ROOT / 'guest/quiet-units.txt').read_text().split():
+                self.assertEqual((root / 'etc/systemd/system' / unit).read_bytes(), b'')
+            self.assertEqual((root / 'etc/udev/rules.d/90-console-setup.rules').read_bytes(), b'')
+            self.assertIn('IOSchedulingClass=idle',
+                          (root / 'etc/systemd/system/apt-daily-upgrade.service.d/50-idle.conf').read_text())
 
     @unittest.skipIf(os.name == 'nt', 'Unprivileged Windows symlinks are not universally available')
     def test_update_rejects_symlinks_to_profile_before_any_write(self):

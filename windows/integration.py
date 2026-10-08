@@ -23,6 +23,7 @@ from windows import gnupg
 from windows.job import Job
 from windows.serial_gateway import boot_command
 from windows.control import paths as control_paths
+from windows.guest_update import REVISION
 
 PROBE = '''import concurrent.futures, hashlib, http.client, socket, ssl, time
 
@@ -116,6 +117,18 @@ def bulk_https():
                 raise
             time.sleep(5)
 
+def gateway_latency():
+    # Informational: time from a new guest connection to the gateway's reply,
+    # including the host relay start and the outbound TCP connection.
+    samples = []
+    for _ in range(5):
+        started = time.monotonic()
+        stream, reply = proxy('www.cloudflare.com')
+        stream.close()
+        if reply.startswith(b'HTTP/1.1 200'):
+            samples.append(round((time.monotonic() - started) * 1000))
+    print('WINDOWS-INTEGRATION: GATEWAY-CONNECT-MS', *samples, flush=True)
+
 blocked_direct()
 stream, reply = proxy('127.0.0.1')
 stream.close()
@@ -124,6 +137,7 @@ if not reply.startswith(b'HTTP/1.1 403'):
 print('WINDOWS-INTEGRATION: LOCAL-BLOCKED', flush=True)
 public_pair()
 bulk_https()
+gateway_latency()
 '''.replace('@BULK_PATH@', gnupg.URL.split('gnupg.org', 1)[1]).replace('@BULK_HASH@', gnupg.SHA256)
 
 DESKTOP_PROBE = '''import pathlib, subprocess, time
@@ -156,6 +170,10 @@ while True:
     time.sleep(2)
 subprocess.run(['systemctl', 'is-active', '--quiet', 'lightdm'], check=True)
 print('WINDOWS-INTEGRATION: DESKTOP-READY', flush=True)
+for command in (['systemd-analyze'], ['systemd-analyze', 'critical-chain', 'graphical.target']):
+    analysis = subprocess.run(command, capture_output=True, text=True)
+    for line in (analysis.stdout + analysis.stderr).splitlines():
+        print('WINDOWS-INTEGRATION: TIMING', line, flush=True)
 '''
 
 UPGRADE_PROBE = '''import hashlib
@@ -167,10 +185,13 @@ if fixture.exists():
         actual = hashlib.sha256((home / relative).read_bytes()).hexdigest()
         if actual != expected:
             raise RuntimeError('Guest upgrade changed user data: ' + relative)
-    if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '0.3.14':
+    if pathlib.Path('/etc/claude-isolate/revision').read_text().strip() != '@REVISION@':
         raise RuntimeError('Offline updater did not install the current guest revision')
+    state = subprocess.check_output(['systemctl', 'show', '-p', 'LoadState', '--value', 'console-setup.service'], text=True)
+    if state.strip() != 'masked' or pathlib.Path('/etc/udev/rules.d/90-console-setup.rules').read_bytes():
+        raise RuntimeError('Offline updater did not install boot tuning')
     deadline = time.monotonic() + 600
-    while not pathlib.Path('/var/lib/claude-isolate/updated-0.3.14').exists():
+    while not pathlib.Path('/var/lib/claude-isolate/updated-@REVISION@').exists():
         if time.monotonic() >= deadline:
             raise RuntimeError('Online application update did not complete')
         time.sleep(5)
@@ -192,10 +213,12 @@ else:
     # persistent gateway. Merely replacing its seed cannot fix its next boot.
     pathlib.Path('/etc/systemd/system/claude-gateway.service').unlink()
     pathlib.Path('/usr/local/sbin/claude-environment-update').unlink()
+    pathlib.Path('/etc/systemd/system/console-setup.service').unlink(missing_ok=True)
+    pathlib.Path('/etc/udev/rules.d/90-console-setup.rules').unlink(missing_ok=True)
     pathlib.Path('/etc/claude-isolate/revision').write_text('0.3.12\\n')
-    pathlib.Path('/var/lib/claude-isolate/updated-0.3.14').unlink(missing_ok=True)
+    pathlib.Path('/var/lib/claude-isolate/updated-@REVISION@').unlink(missing_ok=True)
     print('WINDOWS-INTEGRATION: LEGACY-GUEST-PREPARED', flush=True)
-'''
+'''.replace('@REVISION@', REVISION)
 
 
 def install_guest_update(directory, data, report):
@@ -215,7 +238,7 @@ def install_guest_update(directory, data, report):
         if (data / name).exists():
             shutil.copy2(data / name, report / name)
     updated = environment.load_config(path)
-    if updated.get('guest_revision') != '0.3.14' or not updated.get('guest_update_snapshot'):
+    if updated.get('guest_revision') != REVISION or not updated.get('guest_update_snapshot'):
         print((data / 'installer-update.log').read_text(encoding='utf-8', errors='replace')[-12000:])
         raise RuntimeError('The installer did not update the old Linux image')
     if updated['disk'] != disk or updated['seed'] != seed:
@@ -233,8 +256,10 @@ def run_guest(core, path, cfg, report, desktop):
     report.mkdir(parents=True, exist_ok=True)
     job = Job()
     process = None
+    timings = {}
     try:
         with (report / 'core.log').open('wb') as output:
+            started = time.monotonic()
             process = subprocess.Popen([
                 str(core),
                 'start', '--data', str(path.parent), '--start-gate'],
@@ -254,6 +279,7 @@ def run_guest(core, path, cfg, report, desktop):
                 # booted: that used to unblock a broken launcher and hide
                 # its permanent startup hang from CI.
                 if 'Linux version ' in boot:
+                    timings.setdefault('kernel_started_seconds', round(time.monotonic() - started, 1))
                     try:
                         ready = network_guard.read_state(control_paths(cfg)['ready'])
                         if isinstance(ready, dict) and ready.get('ready'):
@@ -278,6 +304,7 @@ def run_guest(core, path, cfg, report, desktop):
                 if desktop and not desktop_control_checked:
                     boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
                     if 'CLAUDE-ISOLATION: desktop-ready' in boot:
+                        timings['desktop_ready_seconds'] = round(time.monotonic() - started, 1)
                         control = backend.qmp(cfg, 'query-status')
                         if not control.get('running'):
                             raise RuntimeError('Graphical desktop stopped responding to QMP')
@@ -306,6 +333,7 @@ def run_guest(core, path, cfg, report, desktop):
             if desktop and not desktop_control_checked:
                 raise RuntimeError('Post-desktop control and absolute pointer were not verified')
     finally:
+        (report / 'timings.json').write_text(json.dumps(timings), encoding='utf-8')
         # Preserve final state as well as the transitions collected above.
         try:
             state = network_guard.read_state(cfg['network_status'])
@@ -452,6 +480,23 @@ def main():
         # Retain the original evidence names for existing artifact consumers.
         for file in evidence.iterdir():
             shutil.copy2(file, report / file.name)
+        timings = []
+        for cycle, boot_text in enumerate(boots):
+            plain = re.sub(r'\x1b\[[0-9;]*m', '', boot_text)
+            measured = json.loads((report / ('boot-' + str(cycle + 1)) / 'timings.json').read_text(encoding='utf-8'))
+            gateway = re.findall(r'WINDOWS-INTEGRATION: GATEWAY-CONNECT-MS ([\d ]*)', plain)
+            measured['gateway_connect_ms'] = [int(value) for value in gateway[-1].split()] if gateway else []
+            startup = re.findall(r'WINDOWS-INTEGRATION: TIMING (Startup finished in .*)', plain)
+            measured['guest_startup'] = startup[-1].strip() if startup else None
+            timings.append(measured)
+        summary = os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary, 'a', encoding='utf-8') as output:
+                output.write('### Windows TCG timings (' + str(cfg['memory_mb']) + ' MB, ' + str(cfg['cpus']) + ' CPU)\n\n')
+                for cycle, measured in enumerate(timings):
+                    output.write(f'- Boot {cycle + 1}: kernel {measured.get("kernel_started_seconds")} s, '
+                                 f'desktop {measured.get("desktop_ready_seconds")} s, '
+                                 f'guest: {measured["guest_startup"]}, gateway connect ms: {measured["gateway_connect_ms"]}\n')
         result = {'windows_qemu_boot': True, 'packaged_gateway': True,
                   'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus'],
                   'guest_display': 'gtk', 'bundled_runtime': True, 'external_tools_removed_from_path': True, 'automatic_desktop_verified': args.desktop,
@@ -463,6 +508,7 @@ def main():
                   'bulk_https_checksum_verified': True,
                   'direct_internet_blocked': True, 'local_targets_blocked': True,
                   'public_https_connections': boot.count('WINDOWS-INTEGRATION: PUBLIC-HTTPS-OK'),
+                  'boot_timings': timings,
                   'seconds': round(time.monotonic() - started, 1)}
         (report / 'result.json').write_text(json.dumps(result, indent=2), encoding='utf-8')
         print(json.dumps(result))

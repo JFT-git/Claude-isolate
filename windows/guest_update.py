@@ -4,6 +4,7 @@ import io
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -17,7 +18,19 @@ from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
 # Guest payload revision is independent of controller-only releases.
-REVISION = '0.3.14'
+REVISION = '0.3.18'
+IDLE_SERVICE = '[Service]\nNice=19\nCPUSchedulingPolicy=idle\nIOSchedulingClass=idle\n'
+
+
+def boot_tuning_files(root):
+    """Same masks and priorities as guest/preinstall.sh, as plain files."""
+    units = (root / 'guest/quiet-units.txt').read_text(encoding='utf-8').split()
+    if not all(re.fullmatch(r'[A-Za-z0-9_@.-]+\.(service|socket|timer|path)', unit) for unit in units):
+        raise ValueError('Invalid quiet unit name')
+    return ([dict(path='/etc/systemd/system/' + unit, content='', permissions='0644') for unit in units]
+            + [dict(path='/etc/udev/rules.d/90-console-setup.rules', content='', permissions='0644')]
+            + [dict(path='/etc/systemd/system/' + service + '.service.d/50-idle.conf',
+                    content=IDLE_SERVICE, permissions='0644') for service in ('apt-daily', 'apt-daily-upgrade')])
 
 
 def guest_files(root):
@@ -35,7 +48,8 @@ def guest_files(root):
     return [dict(path='/etc/claude-isolate/revision', content=REVISION + '\n', permissions='0644'),
             dict(path='/usr/local/sbin/claude-environment-update',
                  content=(root / 'guest/update.sh').read_text(), permissions='0700'),
-            dict(path='/etc/systemd/system/claude-environment-update.service', content=service, permissions='0644')]
+            dict(path='/etc/systemd/system/claude-environment-update.service', content=service, permissions='0644'),
+            *boot_tuning_files(root)]
 
 
 def payload(cfg):

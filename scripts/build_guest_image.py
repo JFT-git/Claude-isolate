@@ -64,6 +64,7 @@ def build(arch, release, output):
              '--copy-in', str(packages) + ':/tmp',
              '--upload', str(ROOT / 'guest/repositories.sh') + ':/tmp/claude-repositories.sh',
              '--upload', str(ROOT / 'guest/packages.txt') + ':/tmp/claude-packages.txt',
+             '--upload', str(ROOT / 'guest/quiet-units.txt') + ':/tmp/claude-quiet-units.txt',
              '--run', str(ROOT / 'guest/preinstall.sh')])
         run(['virt-sysprep', '--format', 'qcow2', '-a', str(disk), '--operations',
              'machine-id,ssh-hostkeys,logfiles,tmp-files,dhcp-client-state,bash-history'])
