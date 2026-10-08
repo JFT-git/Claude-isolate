@@ -228,6 +228,7 @@ class WindowsBackendTests(unittest.TestCase):
             self.assertTrue(channel.sendall.call_args.args[0].startswith(expected), host)
 
     @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'Windows bridge dependency not installed')
+    @unittest.skipIf(os.name == 'nt', 'The guest proxy reads Linux file descriptors')
     def test_gateway_accepts_new_ssh_session_on_the_same_serial_stream(self):
         import socket
         import threading
