@@ -1,27 +1,35 @@
 """Multiplex filtered relay connections over a private QEMU named pipe.
 
 There is no TCP listener, remote shell, file transfer, or host filesystem API.
-OpenSSH in the guest multiplexes channels; each channel runs the existing relay
-over ordinary Windows pipes, avoiding libslirp's unsupported socket spawning.
+OpenSSH in the guest multiplexes channels; each channel runs the existing
+relay filter in a thread of this process, so a new guest connection does not
+start another executable.
 """
-import os
-from pathlib import Path
+import re
 import shlex
-import subprocess
+import socket
 import sys
 import threading
 import time
+
+import environment
 from windows.pipe import gateway_pipe
+
+PORT_ID = 'gatewayport'
+SYNC_PREFIX = b'\x00CLAUDE-SYNC-'
+SYNC_MARKER = re.compile(re.escape(SYNC_PREFIX) + rb'([0-9a-f]{32})\n')
 
 
 def guest_files(root):
     stream = (root / 'guest/serial-stream.py').read_text(encoding='utf-8')
     stream_path = '/usr/local/lib/claude-isolate/serial-stream.py'
     proxy = shlex.join(['/usr/bin/python3', stream_path])
+    # Software emulation can stall the guest for many seconds; allow a minute
+    # before OpenSSH abandons the session.
     command = ['/usr/bin/ssh', '-N', '-T', '-oBatchMode=yes',
                '-oPreferredAuthentications=none', '-oStrictHostKeyChecking=no',
                '-oUserKnownHostsFile=/dev/null', '-oExitOnForwardFailure=yes',
-               '-oServerAliveInterval=10', '-oServerAliveCountMax=2',
+               '-oServerAliveInterval=10', '-oServerAliveCountMax=6',
                '-oProxyCommand=' + proxy,
                '-L', '10.0.2.100:7890:claude.gateway:7890', 'claude-gateway@private-vm']
     service = ('[Unit]\nDescription=Private isolated Windows gateway\n'
@@ -49,12 +57,63 @@ def boot_command(root):
             'systemctl --no-block start claude-gateway.service']
 
 
+class SessionStream:
+    """One SSH session on the serial pipe, which outlives it.
+
+    paramiko must not close the pipe. A new guest session marker ends this
+    session at once; the marker and what follows it are kept in `carry`.
+    """
+    def __init__(self, stream, prefix=b'', nonce=None):
+        self.stream = stream
+        self.prefix, self.carry, self.nonce = prefix, b'', nonce
+        self.tail = b''
+        self.ended = False
+
+    @property
+    def _closed(self):
+        return self.stream._closed
+
+    def recv(self, count):
+        while not self.ended:
+            if self.prefix:
+                data, self.prefix = self.prefix[:count], self.prefix[count:]
+            else:
+                data = self.stream.recv(count)
+            if not data:
+                return data
+            combined = self.tail + data
+            index = combined.find(SYNC_PREFIX)
+            if index < 0:
+                self.tail = combined[-(len(SYNC_PREFIX) - 1):]
+                return data
+            match = SYNC_MARKER.match(combined, index)
+            if match and match.group(1) == self.nonce and index >= len(self.tail):
+                # The guest repeated this session's marker before reading our
+                # acknowledgement; it is not part of the SSH stream.
+                data = combined[len(self.tail):index] + combined[match.end():]
+                self.tail = b''
+                if data:
+                    return data
+                continue
+            self.carry, self.ended = combined[index:], True
+        return b''
+
+    def send(self, data):
+        return self.stream.send(data)
+
+    def settimeout(self, value):
+        self.stream.settimeout(value)
+
+    def close(self):
+        pass
+
+
 class Gateway:
     def __init__(self, cfg, env):
         self.cfg, self.env = cfg, env
         self.stop = threading.Event()
         self.transport = None
-        self.processes = set()
+        self.channels = set()
         self.lock = threading.Lock()
         self.capacity = threading.BoundedSemaphore(64)
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -62,50 +121,43 @@ class Gateway:
     def start(self):
         self.thread.start()
 
+    def port_event(self, event):
+        # QEMU reports when the guest closes the serial port, i.e. when its
+        # OpenSSH session ended. End our side promptly instead of waiting for
+        # the next session marker to break the old transport.
+        data = event.get('data') or {}
+        if event.get('event') == 'VSERPORT_CHANGE' and data.get('id') == PORT_ID and not data.get('open'):
+            transport = self.transport
+            if transport:
+                transport.close()
+
     def channel(self, channel):
-        process = None
+        with self.lock:
+            self.channels.add(channel)
         try:
-            command = ([sys.executable, 'relay'] if getattr(sys, 'frozen', False)
-                       else [sys.executable, str(Path(__file__).resolve().parents[1] / 'environment.py'), 'relay'])
-            command += ['--mode', self.cfg['network_mode'], '--web-access', self.cfg['web_access']]
-            if self.cfg['network_mode'] == 'proxy':
-                command += ['--port', str(self.cfg['proxy_port'])]
-            process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       env=self.env, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            with self.lock:
-                self.processes.add(process)
-            def upload():
+            def read(size, timeout=None):
+                channel.settimeout(timeout)
                 try:
-                    while not self.stop.is_set():
-                        data = channel.recv(32768)
-                        if not data:
-                            break
-                        process.stdin.write(data)
-                        process.stdin.flush()
-                except (OSError, EOFError):
-                    pass
-                finally:
-                    process.stdin.close()
-            threading.Thread(target=upload, daemon=True).start()
-            while not self.stop.is_set():
-                data = process.stdout.read1(32768)
-                if not data:
-                    break
+                    return channel.recv(size)
+                except socket.timeout as error:
+                    raise TimeoutError from error
+            def write(data):
+                if self.stop.is_set():
+                    raise OSError('Gateway stopped')
                 channel.sendall(data)
+            environment.relay_stream(read, write, self.cfg.get('proxy_port'), self.cfg['network_mode'],
+                                     self.cfg['web_access'], self.env.get('CLAUDE_NETWORK_LEASE'))
         except (OSError, EOFError):
             pass
+        except Exception as error:
+            print('Windows private gateway channel: ' + str(error), file=sys.stderr, flush=True)
         finally:
             try:
                 channel.close()
             except (OSError, EOFError):
                 pass
-            if process:
-                if process.poll() is None:
-                    process.terminate()
-                process.wait(timeout=5)
-                process.stdout.close()
-                with self.lock:
-                    self.processes.discard(process)
+            with self.lock:
+                self.channels.discard(channel)
             self.capacity.release()
 
     def serve(self, stream):
@@ -130,7 +182,8 @@ class Gateway:
         transport.handshake_timeout = 600
         transport.auth_timeout = 60
         self.transport = transport
-        transport.add_server_key(paramiko.RSAKey.generate(2048))
+        # Generated per VM session; ECDSA keys take milliseconds, unlike RSA.
+        transport.add_server_key(paramiko.ECDSAKey.generate())
         transport.start_server(server=Server())
         try:
             while not self.stop.is_set() and transport.is_active():
@@ -139,6 +192,50 @@ class Gateway:
                     threading.Thread(target=self.channel, args=(channel,), daemon=True).start()
         finally:
             transport.close()
+
+    def synchronize(self, stream, buffer=b''):
+        """Wait for the guest proxy's session marker; see guest/serial-stream.py.
+
+        Everything before the newest marker belongs to an abandoned session.
+        Returns the session nonce and bytes received after its marker, or
+        None if the stream ended.
+        """
+        stream.settimeout(.5)
+        while not self.stop.is_set():
+            markers = list(SYNC_MARKER.finditer(buffer))
+            if markers:
+                nonce = markers[-1].group(1)
+                acknowledgement = b'\x00CLAUDE-ACK-' + nonce + b'\n'
+                while acknowledgement:
+                    acknowledgement = acknowledgement[stream.send(acknowledgement):]
+                return nonce, buffer[markers[-1].end():]
+            try:
+                chunk = stream.recv(4096)
+            except (socket.timeout, TimeoutError):
+                continue
+            if not chunk:
+                return None
+            buffer = (buffer + chunk)[-8192:]
+        return None
+
+    def sessions(self, stream):
+        # The guest restarts OpenSSH after a lost session; accept each new
+        # session on the same serial stream for the lifetime of the VM.
+        carry = b''
+        while not self.stop.is_set() and not stream.closed:
+            session = None
+            try:
+                synchronized = self.synchronize(stream, carry)
+                if synchronized is None:
+                    break
+                nonce, remainder = synchronized
+                session = SessionStream(stream, remainder, nonce)
+                self.serve(session)
+            except Exception as error:
+                if self.stop.is_set() or stream.closed:
+                    break
+                print('Windows private gateway session: ' + str(error), file=sys.stderr, flush=True)
+            carry = session.carry if session else b''
 
     def run(self):
         pipe = None
@@ -153,7 +250,7 @@ class Gateway:
                         raise RuntimeError('Private Windows gateway pipe did not start')
                     self.stop.wait(.2)
             if pipe:
-                self.serve(pipe)
+                self.sessions(pipe)
         except Exception as error:
             print('Windows private gateway: ' + str(error), file=sys.stderr, flush=True)
         finally:
@@ -166,8 +263,11 @@ class Gateway:
         if self.transport:
             self.transport.close()
         with self.lock:
-            for process in list(self.processes):
-                if process.poll() is None:
-                    process.terminate()
+            channels = list(self.channels)
+        for channel in channels:
+            try:
+                channel.close()
+            except (OSError, EOFError):
+                pass
         if self.thread.is_alive():
             self.thread.join(timeout=5)

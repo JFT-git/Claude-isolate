@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import queue
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -63,6 +64,7 @@ class Control:
         self.reader = None
         self.reader_factory = reader_factory or (lambda pipe: pipe)
         self.connector = connector or NamedPipe
+        self.on_event = None
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def start(self):
@@ -89,6 +91,11 @@ class Control:
                 reply = json.loads(line)
                 if isinstance(reply, dict) and 'id' in reply:
                     self.replies.put_nowait(reply)
+                elif isinstance(reply, dict) and 'event' in reply and self.on_event:
+                    try:
+                        self.on_event(reply)
+                    except Exception as error:
+                        print('QMP event handler: ' + str(error), file=sys.stderr, flush=True)
                 # QMP events must be drained even with no pending command.
                 # Otherwise synchronous Windows pipe writes can block QEMU's
                 # main loop (e.g. VSERPORT_CHANGE while the guest boots).

@@ -53,7 +53,7 @@ def smoke(folder, directory):
     if plan[plan.index('-m') + 1] != '1024' or plan[plan.index('-smp') + 1] != '1':
         raise RuntimeError('Frozen worker rejected the minimal memory profile')
     net = plan[plan.index('-netdev') + 1]
-    if 'guestfwd=' in net or 'restrict=on' not in net or 'virtserialport,chardev=gateway,name=claude.gateway' not in plan:
+    if 'guestfwd=' in net or 'restrict=on' not in net or 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport' not in plan:
         raise RuntimeError('Frozen relay or QEMU network plan is incorrect')
     for host, expected in [('127.0.0.1', b'HTTP/1.1 403'), ('claude.ai', b'HTTP/1.1 503')]:
         response = run([str(core), 'relay', '--mode', 'system', '--web-access', 'public'],

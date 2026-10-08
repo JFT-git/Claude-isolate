@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -187,23 +188,115 @@ class WindowsBackendTests(unittest.TestCase):
             thread.join(timeout=5)
             server.close()
 
-    def test_channel_close_eof_still_reaps_worker_and_releases_capacity(self):
+    def test_channel_close_eof_releases_capacity_without_worker_process(self):
         from windows.serial_gateway import Gateway
         gateway = Gateway({'network_mode': 'system', 'web_access': 'public'}, {})
-        channel, process = Mock(), Mock()
+        channel = Mock()
         channel.recv.return_value = b''
         channel.close.side_effect = EOFError('SSH connection ended')
-        process.stdout.read1.return_value = b''
-        process.poll.return_value = None
         self.assertTrue(gateway.capacity.acquire(blocking=False))
-        with patch('windows.serial_gateway.subprocess.Popen', return_value=process):
+        with patch('subprocess.Popen') as process:
             gateway.channel(channel)
-        process.terminate.assert_called_once()
-        process.wait.assert_called_once_with(timeout=5)
-        process.stdout.close.assert_called_once()
-        self.assertNotIn(process, gateway.processes)
+        process.assert_not_called()
+        self.assertNotIn(channel, gateway.channels)
         self.assertTrue(all(gateway.capacity.acquire(blocking=False) for _ in range(64)))
         self.assertFalse(gateway.capacity.acquire(blocking=False))
+
+    def test_session_stream_strips_repeated_marker_and_ends_on_a_new_session(self):
+        from windows.serial_gateway import SessionStream
+        nonce, other = b'a' * 32, b'b' * 32
+        source = Mock()
+        source.recv.side_effect = [b'\x00CLAUDE-SYNC-' + nonce + b'\nSSH-2.0-guest\r\n',
+                                   b'payload', b'old\x00CLAUDE-SYNC-' + other + b'\nnext']
+        session = SessionStream(source, b'', nonce)
+        self.assertEqual(session.recv(4096), b'SSH-2.0-guest\r\n')
+        self.assertEqual(session.recv(4096), b'payload')
+        self.assertEqual(session.recv(4096), b'')
+        self.assertEqual(session.carry, b'\x00CLAUDE-SYNC-' + other + b'\nnext')
+        self.assertEqual(session.recv(4096), b'')
+
+    def test_in_process_channel_applies_relay_filter(self):
+        from windows.serial_gateway import Gateway
+        gateway = Gateway({'network_mode': 'system', 'web_access': 'public'}, {'CLAUDE_NETWORK_LEASE': ''})
+        for host, expected in (('127.0.0.1', b'HTTP/1.1 403'), ('10.0.2.2', b'HTTP/1.1 403'),
+                               ('claude.ai', b'HTTP/1.1 503')):
+            request = iter(bytes([c]) for c in ('CONNECT ' + host + ':443 HTTP/1.1\r\n\r\n').encode())
+            channel = Mock()
+            channel.recv.side_effect = lambda size, request=request: next(request, b'')
+            self.assertTrue(gateway.capacity.acquire(blocking=False))
+            gateway.channel(channel)
+            self.assertTrue(channel.sendall.call_args.args[0].startswith(expected), host)
+
+    @unittest.skipUnless(importlib.util.find_spec('paramiko'), 'Windows bridge dependency not installed')
+    def test_gateway_accepts_new_ssh_session_on_the_same_serial_stream(self):
+        import socket
+        import threading
+        import paramiko
+        from windows.serial_gateway import Gateway, SessionStream
+        spec = importlib.util.spec_from_file_location('serial_stream', environment.ROOT / 'guest/serial-stream.py')
+        guest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(guest)
+
+        class Serial:
+            """A socket that outlives SSH sessions, like the guest serial port."""
+            def __init__(self, sock, prefix=b''):
+                self.sock, self.prefix, self.closed = sock, prefix, False
+            _closed = property(lambda self: self.closed)
+            def recv(self, count):
+                if self.prefix:
+                    data, self.prefix = self.prefix[:count], self.prefix[count:]
+                    return data
+                return self.sock.recv(count)
+            def send(self, data):
+                return self.sock.send(data)
+            def settimeout(self, value):
+                self.sock.settimeout(value)
+            def close(self):
+                self.closed = True
+                self.sock.close()
+
+        server, client = socket.socketpair()
+        stream = Serial(server)
+        gateway = Gateway({'network_mode': 'system', 'web_access': 'public'},
+                          dict(os.environ, CLAUDE_NETWORK_LEASE=''))
+        thread = threading.Thread(target=gateway.sessions, args=(stream,), daemon=True)
+        thread.start()
+
+        def session():
+            client.settimeout(None)
+            banner = guest.handshake(client.fileno(), time.monotonic() + 10)
+            transport = paramiko.Transport(SessionStream(Serial(client, banner)))
+            transport.start_client(timeout=10)
+            transport.auth_none('claude-gateway')
+            channel = transport.open_channel('direct-tcpip', ('claude.gateway', 7890), ('127.0.0.1', 0), timeout=5)
+            channel.settimeout(10)
+            channel.sendall(b'CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n')
+            reply = channel.recv(4096)
+            return transport, channel, reply
+
+        try:
+            first, channel, reply = session()
+            self.assertTrue(reply.startswith(b'HTTP/1.1 403'))
+            # The guest's OpenSSH dies without a disconnect message, and the
+            # host's last packets for it stay queued on the serial stream.
+            channel.close()
+            first.close()
+            first.join(5)
+            self.assertFalse(first.is_alive())
+            gateway.port_event({'event': 'VSERPORT_CHANGE', 'data': {'id': 'gatewayport', 'open': False}})
+            second, channel, reply = session()
+            self.assertTrue(reply.startswith(b'HTTP/1.1 403'))
+            second.close()
+            second.join(5)
+            # Without a port event, the next marker alone replaces a session.
+            third, channel, reply = session()
+            self.assertTrue(reply.startswith(b'HTTP/1.1 403'))
+            third.close()
+        finally:
+            gateway.close()
+            stream.close()
+            client.close()
+            thread.join(timeout=10)
 
     def test_native_gnupg_bad_checksum_is_rejected_before_extraction(self):
         with tempfile.TemporaryDirectory() as temporary, \
@@ -259,7 +352,7 @@ class WindowsBackendTests(unittest.TestCase):
             net = cmd[cmd.index('-netdev') + 1]
             self.assertNotIn('guestfwd=', net)
             self.assertIn('restrict=on', net)
-            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
+            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport', cmd)
             self.assertIn('virtio-gpu-pci,edid=off,xres=1920,yres=1200', cmd)
             self.assertIn('usb-tablet', cmd)
             self.assertNotIn('usb-mouse', cmd)

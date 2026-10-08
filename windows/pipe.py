@@ -3,7 +3,9 @@ import ctypes
 from ctypes import wintypes
 from functools import lru_cache
 import os
+import socket
 import threading
+import time
 
 
 class Overlapped(ctypes.Structure):
@@ -52,6 +54,7 @@ class NamedPipe:
         self.close_lock = threading.Lock()
         self.buffer = bytearray()
         self.wake = threading.Event()
+        self.read_timeout = None
 
     def operation(self, writing, data):
         lock = self.writer_lock if writing else self.reader_lock
@@ -66,18 +69,18 @@ class NamedPipe:
                 # only bytes already present; one caller owns the read side.
                 # This also gives close() a prompt cancellation point while
                 # retaining independent OVERLAPPED completion for each I/O.
+                deadline = None if self.read_timeout is None else time.monotonic() + self.read_timeout
                 while True:
-                    available = wintypes.DWORD()
-                    if not self.api.PeekNamedPipe(self.handle, None, 0, None, ctypes.byref(available), None):
-                        error = ctypes.get_last_error()
-                        if error in (109, 232):
-                            return b''
-                        raise ctypes.WinError(error)
-                    if available.value:
-                        size = min(size, available.value)
+                    available = self.peek()
+                    if available is None:
+                        return b''
+                    if available:
+                        size = min(size, available)
                         break
                     if self.wake.wait(.005):
                         raise OSError('Windows pipe is closed')
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise socket.timeout('timed out')
             buffer = ctypes.create_string_buffer(data, size) if writing else ctypes.create_string_buffer(size)
             count = wintypes.DWORD()
             event = self.api.CreateEventW(None, True, False, None)
@@ -99,6 +102,16 @@ class NamedPipe:
                 return count.value if writing else buffer.raw[:count.value]
             finally:
                 self.api.CloseHandle(event)
+
+    def peek(self):
+        """Bytes available without blocking; None once the peer has closed."""
+        available = wintypes.DWORD()
+        if not self.api.PeekNamedPipe(self.handle, None, 0, None, ctypes.byref(available), None):
+            error = ctypes.get_last_error()
+            if error in (109, 232):
+                return None
+            raise ctypes.WinError(error)
+        return available.value
 
     def read(self, count):
         if self.buffer:
@@ -137,7 +150,10 @@ class NamedPipe:
         return self.closed
 
     def settimeout(self, value):
-        pass  # Cancellation and QEMU exit release pending I/O; no partial SSH writes.
+        # Reads time out like a socket so an abandoned SSH session's reader
+        # thread exits instead of consuming the next session's bytes. Writes
+        # never time out: a partial SSH packet would corrupt the stream.
+        self.read_timeout = value
 
     def close(self):
         with self.close_lock:

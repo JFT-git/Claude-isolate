@@ -204,7 +204,7 @@ def command(cfg, check=True):
             raise ValueError('Invalid Windows control pipe')
         cmd += ['-device', 'virtio-serial-pci',
                 '-chardev', 'pipe,id=gateway,path=' + pipe + '-gateway',
-                '-device', 'virtserialport,chardev=gateway,name=claude.gateway']
+                '-device', 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport']
     if arch == 'aarch64':
         firmware = local_path(cfg['firmware'])
         if check and not firmware.is_file():
@@ -305,38 +305,61 @@ def check_proxy(port):
             raise RuntimeError('Local port is not a working unauthenticated HTTP CONNECT proxy')
 
 
-def relay(port=None, mode='proxy', web_access='services'):
+def validate_relay(port, mode, web_access):
     if mode not in ('system', 'proxy'):
         raise ValueError('Unsupported network mode')
     if web_access not in ('services', 'public') or (web_access == 'public' and mode != 'system'):
         raise ValueError('Public browsing requires system VPN mode')
     if mode == 'proxy' and (type(port) is not int or not 1 <= port <= 65535):
         raise ValueError('Invalid proxy port')
-    # For plain HTTP, force one upstream request per connection. CONNECT
-    # permits a TLS tunnel only to the validated destination.
+
+
+def relay(port=None, mode='proxy', web_access='services'):
+    """Serve one guest connection on stdin/stdout (QEMU guestfwd)."""
+    validate_relay(port, mode, web_access)
     import select
     if os.name == 'nt':
         import msvcrt
         msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
         msvcrt.setmode(sys.stdout.fileno(), os.O_BINARY)
+    def read(size, timeout=None):
+        if timeout is not None and os.name != 'nt' and not select.select([sys.stdin.buffer], [], [], timeout)[0]:
+            raise TimeoutError
+        return os.read(0, size)
+    def write(data):
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+    relay_stream(read, write, port, mode, web_access, os.environ.get('CLAUDE_NETWORK_LEASE'))
+
+
+def relay_stream(read, write, port, mode, web_access, lease):
+    """Filter and forward one guest connection.
+
+    read(size, timeout) returns b'' at EOF and raises TimeoutError when the
+    optional timeout expires; write(data) sends all bytes to the guest.
+    """
+    validate_relay(port, mode, web_access)
+    # For plain HTTP, force one upstream request per connection. CONNECT
+    # permits a TLS tunnel only to the validated destination. The header is
+    # read byte by byte so tunnel payload is never consumed before validation.
     header = bytearray()
     deadline = time.monotonic() + 10
     while b'\r\n\r\n' not in header and len(header) < 32768:
         remaining = deadline - time.monotonic()
-        if remaining <= 0 or (os.name != 'nt' and not select.select([sys.stdin.buffer], [], [], remaining)[0]):
+        if remaining <= 0:
             return
-        chunk = os.read(0, 1)
+        try:
+            chunk = read(1, remaining)
+        except TimeoutError:
+            return
         if not chunk:
             return
         header.extend(chunk)
     if b'\r\n\r\n' not in header or not allowed_request(bytes(header), web_access):
-        sys.stdout.buffer.write(b'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-        sys.stdout.buffer.flush()
+        write(b'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
         return
-    lease = os.environ.get('CLAUDE_NETWORK_LEASE')
     if not network_guard.permitted(lease):
-        sys.stdout.buffer.write(b'HTTP/1.1 503 Network blocked\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-        sys.stdout.buffer.flush()
+        write(b'HTTP/1.1 503 Network blocked\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
         return
     first_line = bytes(header).split(b'\r\n', 1)[0]
     target = first_line.decode('ascii').split(' ')[1]
@@ -354,8 +377,7 @@ def relay(port=None, mode='proxy', web_access='services'):
                     else open_public(destination.hostname, destination.port or 80, timeout=3))
     except OSError as error:
         print(f'Gateway connection failed: {error}', file=sys.stderr)
-        sys.stdout.buffer.write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
-        sys.stdout.buffer.flush()
+        write(b'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
         return
     with upstream as s:
         # Recheck after connect: permission may have expired during connection.
@@ -364,8 +386,7 @@ def relay(port=None, mode='proxy', web_access='services'):
         is_tunnel = header.startswith(b'CONNECT ')
         if mode == 'system' and is_tunnel:
             # We relay encrypted bytes; TLS remains between guest and server.
-            sys.stdout.buffer.write(b'HTTP/1.1 200 Connection established\r\n\r\n')
-            sys.stdout.buffer.flush()
+            write(b'HTTP/1.1 200 Connection established\r\n\r\n')
         elif mode == 'system':
             path = destination.path or '/'
             if destination.query:
@@ -388,7 +409,7 @@ def relay(port=None, mode='proxy', web_access='services'):
         def upload():
             try:
                 while True:
-                    chunk = os.read(0, 65536)
+                    chunk = read(65536)
                     if not chunk or not network_guard.permitted(lease):
                         break
                     s.sendall(chunk)
@@ -402,8 +423,7 @@ def relay(port=None, mode='proxy', web_access='services'):
                 chunk = s.recv(65536)
                 if not chunk or not network_guard.permitted(lease):
                     break
-                sys.stdout.buffer.write(chunk)
-                sys.stdout.buffer.flush()
+                write(chunk)
         finally:
             finished.set()
 
@@ -546,8 +566,9 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                                 from windows.serial_gateway import Gateway
                                 from windows.control import Control
                                 control = Control(cfg, proc)
-                                control.start()
                                 bridge = Gateway(cfg, env)
+                                control.on_event = bridge.port_event
+                                control.start()
                                 bridge.start()
                                 control.wait_ready()
                             if proc.poll() is None:

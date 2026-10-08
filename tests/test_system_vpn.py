@@ -26,7 +26,7 @@ class SystemVpnTests(unittest.TestCase):
         net = cmd[cmd.index('-netdev') + 1]
         if environment.platform.system() == 'Windows':
             self.assertNotIn('guestfwd=', net)
-            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway', cmd)
+            self.assertIn('virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport', cmd)
         else:
             self.assertIn('--mode system', net)
         self.assertNotIn('--port', net)
