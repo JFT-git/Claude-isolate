@@ -282,6 +282,13 @@ WantedBy=graphical.target
                 apt=dict(http_proxy='http://10.0.2.100:7890',
                          https_proxy='http://10.0.2.100:7890'),
                 package_update=False,
+                # Only modules this guest needs: each stage costs seconds
+                # under software emulation. sshd is masked, so no host keys.
+                cloud_init_modules=['bootcmd', 'write_files', 'growpart', 'resizefs', 'set_hostname',
+                                    'update_hostname', 'update_etc_hosts', 'users_groups'],
+                cloud_config_modules=['runcmd'],
+                cloud_final_modules=['scripts_user'],
+                ssh_genkeytypes=[],
                 write_files=files,
                 runcmd=[['systemctl', 'mask', '--now', 'ssh.service', 'ssh.socket'],
                         ['systemctl', 'daemon-reload'],

@@ -8,9 +8,10 @@ export NEEDRESTART_MODE=a
 systemctl mask lightdm.service
 if [ -f /etc/claude-preinstalled ]; then
   # Fail closed rather than downloading repairs for a broken release image.
-  for pkg in xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils claude-desktop firefox openssh-client; do
-    test "$(dpkg-query -W -f='${db:Status-Status}' "$pkg")" = installed
-  done
+  # One dpkg-query for all packages: each call costs seconds under emulation.
+  required='xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils claude-desktop firefox openssh-client'
+  # shellcheck disable=SC2086
+  test "$(dpkg-query -W -f='${db:Status-Status}\n' $required 2>/dev/null | grep -cx installed)" -eq "$(echo $required | wc -w)"
   echo 'CLAUDE-ISOLATION: preinstalled-image no-package-downloads' > /dev/console
 else
 apt-get -o DPkg::Lock::Timeout=180 update
@@ -142,12 +143,20 @@ runuser -u claude -- xdg-settings set default-web-browser firefox.desktop
 # Log versions and absence of keyring, never account state or secrets.
 if dpkg-query -W -f='${db:Status-Status}' gnome-keyring 2>/dev/null | grep -qx installed; then exit 1; fi
 echo 'CLAUDE-ISOLATION: no-keyring' > /dev/console
-# Reclaim installation archives and tell qcow2 which guest blocks are free.
-apt-get clean
-install -d /etc/systemd/journald.conf.d
-printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/50-isolated.conf
-systemctl restart systemd-journald
-fstrim -av || true
+journal='[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n'
+# shellcheck disable=SC2059
+if [ "$(cat /etc/systemd/journald.conf.d/50-isolated.conf 2>/dev/null || true)" != "$(printf "$journal")" ]; then
+  install -d /etc/systemd/journald.conf.d
+  # shellcheck disable=SC2059
+  printf "$journal" > /etc/systemd/journald.conf.d/50-isolated.conf
+  systemctl restart systemd-journald
+fi
+if [ ! -f /etc/claude-preinstalled ]; then
+  # Reclaim installation archives and tell qcow2 which guest blocks are free.
+  # A preinstalled image downloaded nothing and was sparsified at build time.
+  apt-get clean
+  fstrim -av || true
+fi
 if [ -x /usr/local/sbin/claude-environment-update ]; then
   /usr/local/sbin/claude-environment-update --installed
 fi

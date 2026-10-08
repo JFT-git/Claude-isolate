@@ -33,6 +33,8 @@ while IFS= read -r unit; do
     [ -z "$unit" ] || { rm -f "/etc/systemd/system/$unit"; : > "/etc/systemd/system/$unit"; }
 done < /tmp/claude-quiet-units.txt
 : > /etc/udev/rules.d/90-console-setup.rules
+install -d /etc/systemd/journald.conf.d
+printf '[Journal]\nSystemMaxUse=64M\nRuntimeMaxUse=32M\n' > /etc/systemd/journald.conf.d/50-isolated.conf
 for service in apt-daily apt-daily-upgrade; do
     install -d "/etc/systemd/system/$service.service.d"
     printf '[Service]\nNice=19\nCPUSchedulingPolicy=idle\nIOSchedulingClass=idle\n' \
