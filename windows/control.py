@@ -57,8 +57,7 @@ def request(cfg, execute, timeout=None):
 class Control:
     def __init__(self, cfg, process, reader_factory=None, connector=None, restore=None):
         self.cfg, self.process = cfg, process
-        # file: URI of a saved state to load into a QEMU started with
-        # -incoming defer; None for a normal boot.
+        # True to load the saved state into a QEMU started paused (-S).
         self.restore = restore
         self.restored = False
         self.suspended = False
@@ -188,44 +187,57 @@ class Control:
                 reply['return'] = self.exchange(pipe, command['execute'])
             write_state(self.files['response'], reply)
 
-    def wait_migration(self, pipe, timeout):
+    def job(self, pipe, execute, arguments, timeout):
+        """Run a QMP job to completion; return its error text or None."""
+        identity = 'claude-' + uuid.uuid4().hex[:12]
+        self.exchange(pipe, execute, dict(arguments, **{'job-id': identity}))
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            status = self.exchange(pipe, 'query-migrate').get('status')
-            if status in ('completed', 'failed', 'cancelled'):
-                return status
+            jobs = self.exchange(pipe, 'query-jobs')
+            current = next((item for item in jobs if item.get('id') == identity), None)
+            if current and current.get('status') == 'concluded':
+                self.exchange(pipe, 'job-dismiss', {'id': identity})
+                return current.get('error')
             time.sleep(.2)
         return 'timeout'
 
+    def snapshot(self, pipe, execute, timeout):
+        from windows import state
+        arguments = dict(tag=state.TAG, devices=[state.NODE])
+        if execute != 'snapshot-delete':
+            arguments['vmstate'] = state.NODE
+        return self.job(pipe, execute, arguments, timeout)
+
     def load(self, pipe):
-        """Load the saved guest into this QEMU (started with -incoming defer)."""
-        self.exchange(pipe, 'migrate-incoming', {'uri': self.restore})
-        status = self.wait_migration(pipe, 600)
-        if status != 'completed':
-            raise RuntimeError('Сохранённое состояние не загрузилось: ' + status)
-        # The source was paused before saving; run the restored guest.
+        """Load the saved guest into this QEMU (started paused with -S)."""
+        error = self.snapshot(pipe, 'snapshot-load', 600)
+        if error:
+            raise RuntimeError('Сохранённое состояние не загрузилось: ' + str(error))
         self.exchange(pipe, 'cont')
         self.restored = True
-        # The guest now changes the disk; its saved memory is obsolete.
+        # The guest now changes the disk; its saved memory is obsolete. QEMU
+        # holds the image, so remove the snapshot through QEMU itself.
         from windows import state
-        state.discard(self.cfg)
+        state.discard(self.cfg, delete_snapshot=False)
+        self.snapshot(pipe, 'snapshot-delete', 600)
 
     def save(self, pipe):
-        """Pause the guest and write its memory and devices to the state file."""
+        """Pause the guest and store its memory in a disk image snapshot."""
         from windows import state
-        if not state.supported(self.cfg):
-            raise RuntimeError('Путь папки среды не поддерживает быстрый запуск')
-        state.discard(self.cfg)
+        state.discard(self.cfg, delete_snapshot=False)
         self.exchange(pipe, 'stop')
         try:
-            self.exchange(pipe, 'migrate', {'uri': state.uri(self.cfg)})
-            status = self.wait_migration(pipe, 900)
-        except RuntimeError:
-            status = 'failed'
-        if status != 'completed':
-            state.discard(self.cfg)
-            self.exchange(pipe, 'cont')
-            raise RuntimeError('Не удалось сохранить состояние Linux: ' + status)
+            # An earlier incomplete save may have left the same tag.
+            self.snapshot(pipe, 'snapshot-delete', 600)
+            error = self.snapshot(pipe, 'snapshot-save', 900)
+        except RuntimeError as failure:
+            error = str(failure)
+        if error:
+            try:
+                self.snapshot(pipe, 'snapshot-delete', 600)
+            finally:
+                self.exchange(pipe, 'cont')
+            raise RuntimeError('Не удалось сохранить состояние Linux: ' + str(error))
         self.suspended = True
         return {'saved': True}
 

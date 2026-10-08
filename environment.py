@@ -185,7 +185,7 @@ def command(cfg, check=True):
            # advertises AMD SVM by default, even on an Intel WHPX host.
            '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else whpx_cpu + ',svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
-           '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap',
+           '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,node-name=claude-disk',
            '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
            '-netdev', net, '-device', 'virtio-net-pci,netdev=isolated',
            '-device', 'virtio-gpu-pci,edid=off,xres=1920,yres=1200',
@@ -541,8 +541,8 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                         # Checked under the disk lock: a saved state is valid
                         # only for this exact disk content and QEMU command.
                         if saved_state.usable(cfg, cmd):
-                            restore = saved_state.uri(cfg)
-                            cmd = cmd + ['-incoming', 'defer']
+                            restore = True
+                            cmd = cmd + ['-S']
                     status_path = cfg.get('network_status')
                     if status_path:
                         Path(status_path).with_suffix('.revoked').unlink(missing_ok=True)

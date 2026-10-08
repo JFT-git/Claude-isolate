@@ -336,9 +336,14 @@ def run_fast_start(core, path, cfg, report):
         process.wait(timeout=300)
         output.close()
         measured['suspend_seconds'] = round(time.monotonic() - started, 1)
-        if process.returncode or not all(item.is_file() for item in state.paths(cfg)):
+        if process.returncode or not state.exists(cfg):
             raise RuntimeError('No saved state after suspending')
-        measured['state_mib'] = state.paths(cfg)[0].stat().st_size // 1048576
+        info = json.loads(subprocess.check_output([state.image_tool(cfg), 'info', '--output=json', cfg['disk']],
+                                                  creationflags=subprocess.CREATE_NO_WINDOW))
+        snapshots = [item for item in info.get('snapshots', []) if item.get('name') == state.TAG]
+        if len(snapshots) != 1:
+            raise RuntimeError('The fast-start snapshot is missing from the disk')
+        measured['state_mib'] = snapshots[0].get('vm-state-size', 0) // 1048576
         time.sleep(30)
         started = time.monotonic()
         process, output = start_core(core, path, report, 'boot-4')
@@ -351,7 +356,7 @@ def run_fast_start(core, path, cfg, report):
                 return False
         wait_for(restored, process, 600, 'Restoring the saved guest')
         measured['restore_seconds'] = round(time.monotonic() - started, 1)
-        if state.paths(cfg)[0].exists():
+        if state.exists(cfg):
             raise RuntimeError('A restored guest kept its single-use saved state')
         wait_for(lambda: network_after(cfg) is not None, process, 300, 'Gateway HTTPS after restore')
         measured['network_after_restore_seconds'] = round(time.monotonic() - started, 1)
@@ -365,6 +370,10 @@ def run_fast_start(core, path, cfg, report):
         if stopped.returncode:
             raise RuntimeError('Power-off after restore failed')
         process.wait(timeout=600)
+        info = json.loads(subprocess.check_output([state.image_tool(cfg), 'info', '--output=json', cfg['disk']],
+                                                  creationflags=subprocess.CREATE_NO_WINDOW))
+        if any(item.get('name') == state.TAG for item in info.get('snapshots', [])):
+            raise RuntimeError('The used fast-start snapshot was not removed from the disk')
     finally:
         network_guard.revoke(None, cfg['network_status'])
         job.close()

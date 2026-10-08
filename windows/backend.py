@@ -87,7 +87,7 @@ def configure_resources(path, cfg):
     from windows import state
     # Keep the memory size a saved state was taken with; recalculating from
     # the currently free memory would invalidate the fast start.
-    if cfg.get('resources_mode') == 'auto' and not state.paths(cfg)[0].exists():
+    if cfg.get('resources_mode') == 'auto' and not state.exists(cfg):
         cfg.update(automatic_resources())
     reserve = 1024 if cfg.get('resources_mode') == 'auto' else 512
     warn_memory(cfg['memory_mb'], reserve)
@@ -277,7 +277,7 @@ def status(cfg, running=False):
     from windows.control import paths as control_paths
     state = {'ready': Path(cfg['disk']).is_file() and Path(cfg['seed']).is_file(),
              'running': running, 'memory_mb': cfg['memory_mb'], 'cpus': cfg['cpus'],
-             'saved_state': saved_state.paths(cfg)[0].is_file()}
+             'saved_state': saved_state.exists(cfg)}
     if not running:
         state['message'] = ('Готова к быстрому запуску: Linux продолжит работу с места остановки'
                             if state['ready'] and state['saved_state'] else
@@ -355,7 +355,7 @@ def main():
             try:
                 qmp(cfg, 'system_powerdown')
             except RuntimeError:
-                if not state.paths(cfg)[0].exists():
+                if not state.exists(cfg):
                     raise
                 state.discard(cfg)
                 emit('Сохранённое состояние удалено. Следующий запуск будет обычной загрузкой.')
