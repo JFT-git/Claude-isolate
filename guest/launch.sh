@@ -7,15 +7,15 @@ export http_proxy="$HTTP_PROXY"
 export https_proxy="$HTTP_PROXY"
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy="$NO_PROXY"
-# The autostart entry waits until the host permits network access. A guest
-# prepared and saved without network resumes here once the VPN check passes.
-if [ "${CLAUDE_WAIT_NETWORK:-}" = 1 ]; then
+# After an offline prepare the gateway is not up yet. One quick probe, then a
+# short wait; when the host already permits access this returns immediately.
+if ! curl --fail --silent --proxy "$HTTP_PROXY" --connect-timeout 2 --max-time 5 \
+    https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; then
   waited=0
   until curl --fail --silent --proxy "$HTTP_PROXY" --connect-timeout 5 --max-time 20 \
       https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; do
     waited=$((waited + 3))
-    # Bound the wait: the host may never grant network (offline prepare).
-    if [ "$waited" -ge 180 ]; then break; fi
+    if [ "$waited" -ge 120 ]; then break; fi
     sleep 3
   done
 fi

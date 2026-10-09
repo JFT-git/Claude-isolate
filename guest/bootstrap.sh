@@ -48,7 +48,7 @@ cat > /home/claude/.config/autostart/claude.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Claude Desktop
-Exec=env CLAUDE_WAIT_NETWORK=1 /usr/local/bin/claude-isolated
+Exec=/usr/local/bin/claude-isolated
 EOF
 /usr/local/sbin/claude-display-install
 # Desktop/menu launch paths all use the same proxy and password-store settings.
