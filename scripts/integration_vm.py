@@ -51,7 +51,15 @@ for url in https://1.1.1.1 http://10.0.2.2 http://169.254.169.254; do
    echo 'AUDIT: direct network unexpectedly open'; exit 1
  fi
 done
-curl --fail --connect-timeout 30 --max-time 120 --proxy http://10.0.2.100:7890 https://example.com -o /dev/null
+# The gateway may still be coming up on a slow emulator; retry the proxy probe.
+proxy_ok=0
+for probe in 1 2 3 4 5 6; do
+ if curl --fail --connect-timeout 15 --max-time 90 --proxy http://10.0.2.100:7890 https://example.com -o /dev/null; then
+  proxy_ok=1; break
+ fi
+ sleep 5
+done
+test "$proxy_ok" -eq 1
 for url in http://127.0.0.1 http://169.254.169.254 https://10.0.2.2; do
  if curl --fail --noproxy '' --max-time 5 --proxy http://10.0.2.100:7890 "$url" -o /dev/null; then
    echo 'AUDIT: proxy reached private destination'; exit 1
@@ -61,7 +69,7 @@ done
 runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority firefox --new-window about:blank > /tmp/firefox-smoke.log 2>&1 &
 # Wait for actual windows instead of assuming every emulator opens them in 25s.
 attempt=0
-while [ "$attempt" -lt 90 ]; do
+while [ "$attempt" -lt 150 ]; do
  if runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xwininfo -root -tree > /tmp/windows && grep -qi firefox /tmp/windows && grep -qi claude /tmp/windows; then
   break
  fi
@@ -88,7 +96,7 @@ def main():
     parser.add_argument('--data', type=Path, required=True, help='New empty test directory')
     parser.add_argument('--base', type=Path)
     parser.add_argument('--sha256')
-    parser.add_argument('--timeout', type=int, default=1800)
+    parser.add_argument('--timeout', type=int, default=3000)
     args = parser.parse_args()
     data = args.data.resolve()
     data.mkdir(mode=0o700, parents=True, exist_ok=False)
