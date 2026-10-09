@@ -24,7 +24,7 @@ jobs:
         run: pip-audit --strict --disable-pip --no-deps -r requirements-windows.txt -f json -o reports/pip-audit-windows.json
       - name: Scan source dependencies and secrets
         if: always()
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -64,14 +64,14 @@ jobs:
           docker run --rm --network none --entrypoint dpkg-query claude-guest-sca:local -s firefox > reports/firefox-package.txt
           cp security/trivy-guest-reviewed.yaml reports/reviewed-findings.yaml
       - name: Generate CycloneDX SBOM
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           format: cyclonedx
           output: reports/guest.cdx.json
           exit-code: '0'
       - name: Preserve unfiltered vulnerability evidence
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           scanners: vuln
@@ -80,7 +80,7 @@ jobs:
           output: reports/guest-vulnerabilities-raw.json
           exit-code: '0'
       - name: Scan all known high/critical vulnerabilities (including unfixed)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           scanners: vuln
