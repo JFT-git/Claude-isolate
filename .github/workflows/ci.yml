@@ -42,17 +42,9 @@ jobs:
           for script in guest/*.sh packaging/*.sh; do sh -n "$script"; done
           bash -n macos/bootstrap.sh
   guest-image:
-    name: Prepared guest (${{ matrix.arch }})
+    name: Prepared guest (x86_64)
     needs: test
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            arch: x86_64
-          - os: ubuntu-24.04-arm
-            arch: aarch64
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,12 +59,12 @@ jobs:
           if [ -e /dev/kvm ]; then sudo chown "$(id -u):$(id -g)" /dev/kvm; fi
       - name: Build signed-vendor preinstalled image
         env:
-          IMAGE_ARCH: ${{ matrix.arch }}
+          IMAGE_ARCH: x86_64
           IMAGE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.3.17' }}
         run: python3 scripts/build_guest_image.py --arch "$IMAGE_ARCH" --release "$IMAGE_RELEASE"
       - name: Boot prepared image and verify desktop and isolation
         env:
-          IMAGE_ARCH: ${{ matrix.arch }}
+          IMAGE_ARCH: x86_64
         run: |
           python3 - <<'PYCODE'
           import json, os, pathlib, re, subprocess
@@ -88,19 +80,77 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: guest-verification-${{ matrix.arch }}
+          name: guest-verification-x86_64
           path: |
             reports/guest-boot/*.log
             reports/guest-boot/*.json
           if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: guest-manifest-${{ matrix.arch }}
+          name: guest-manifest-x86_64
           path: dist/guest/guest-image-*.json
           if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: build-guest-${{ matrix.arch }}
+          name: build-guest-x86_64
+          path: |
+            dist/guest/*.qcow2
+            dist/guest/*.sha256
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+  guest-image-arm:
+    name: Prepared guest (aarch64)
+    needs: test
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native image tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libguestfs-tools qemu-utils qemu-system qemu-efi-aarch64 genisoimage gnupg
+          sudo chmod 0644 /boot/vmlinuz-*
+          # Grant KVM only to the disposable runner user, not all users.
+          if [ -e /dev/kvm ]; then sudo chown "$(id -u):$(id -g)" /dev/kvm; fi
+      - name: Build signed-vendor preinstalled image
+        env:
+          IMAGE_ARCH: aarch64
+          IMAGE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.3.17' }}
+        run: python3 scripts/build_guest_image.py --arch "$IMAGE_ARCH" --release "$IMAGE_RELEASE"
+      - name: Boot prepared image and verify desktop and isolation
+        env:
+          IMAGE_ARCH: aarch64
+        run: |
+          python3 - <<'PYCODE'
+          import json, os, pathlib, re, subprocess
+          manifest = json.loads(pathlib.Path('dist/guest/guest-image-' + os.environ['IMAGE_ARCH'] + '.json').read_text())
+          subprocess.run(['python3', 'scripts/integration_vm.py', '--data', 'reports/guest-boot',
+                          '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256']], check=True)
+          log = pathlib.Path('reports/guest-boot/boot.log').read_text(errors='replace')
+          if 'preinstalled-image no-package-downloads' not in log:
+              raise RuntimeError('Prepared image did not take the no-download setup path')
+          if re.search(r'Get:\d+ ', log):
+              raise RuntimeError('Fresh prepared guest unexpectedly downloaded packages')
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: guest-verification-aarch64
+          path: |
+            reports/guest-boot/*.log
+            reports/guest-boot/*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: guest-manifest-aarch64
+          path: dist/guest/guest-image-*.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-guest-aarch64
           path: |
             dist/guest/*.qcow2
             dist/guest/*.sha256
@@ -109,7 +159,7 @@ jobs:
           retention-days: 14
   macos:
     name: Build macOS (${{ matrix.arch }})
-    needs: [test, guest-image]
+    needs: [test, guest-image, guest-image-arm]
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +200,7 @@ jobs:
           retention-days: 14
   portable:
     name: Package (${{ matrix.target }})
-    needs: [test, guest-image]
+    needs: [test, guest-image, guest-image-arm]
     strategy:
       fail-fast: false
       matrix:
@@ -204,7 +254,7 @@ jobs:
           python-version: '3.12'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: guest-manifest-*
+          pattern: guest-manifest-x86_64
           path: .
           merge-multiple: true
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -248,7 +298,7 @@ jobs:
   release:
     name: Publish prerelease
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-    needs: [test, guest-image, macos, portable, windows, sast, sca]
+    needs: [test, guest-image, guest-image-arm, macos, portable, windows, sast, sca]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
