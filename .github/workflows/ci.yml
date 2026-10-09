@@ -70,7 +70,7 @@ jobs:
           import json, os, pathlib, re, subprocess
           manifest = json.loads(pathlib.Path('dist/guest/guest-image-' + os.environ['IMAGE_ARCH'] + '.json').read_text())
           subprocess.run(['python3', 'scripts/integration_vm.py', '--data', 'reports/guest-boot',
-                          '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256']], check=True)
+                          '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256'], '--timeout', '2400'], check=True)
           log = pathlib.Path('reports/guest-boot/boot.log').read_text(errors='replace')
           if 'preinstalled-image no-package-downloads' not in log:
               raise RuntimeError('Prepared image did not take the no-download setup path')
@@ -128,7 +128,7 @@ jobs:
           import json, os, pathlib, re, subprocess
           manifest = json.loads(pathlib.Path('dist/guest/guest-image-' + os.environ['IMAGE_ARCH'] + '.json').read_text())
           subprocess.run(['python3', 'scripts/integration_vm.py', '--data', 'reports/guest-boot',
-                          '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256']], check=True)
+                          '--base', 'dist/guest/' + manifest['filename'], '--sha256', manifest['sha256'], '--timeout', '2400'], check=True)
           log = pathlib.Path('reports/guest-boot/boot.log').read_text(errors='replace')
           if 'preinstalled-image no-package-downloads' not in log:
               raise RuntimeError('Prepared image did not take the no-download setup path')

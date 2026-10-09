@@ -10,8 +10,12 @@ export no_proxy="$NO_PROXY"
 # The autostart entry waits until the host permits network access. A guest
 # prepared and saved without network resumes here once the VPN check passes.
 if [ "${CLAUDE_WAIT_NETWORK:-}" = 1 ]; then
+  waited=0
   until curl --fail --silent --proxy "$HTTP_PROXY" --connect-timeout 5 --max-time 20 \
       https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; do
+    waited=$((waited + 3))
+    # Bound the wait: the host may never grant network (offline prepare).
+    if [ "$waited" -ge 180 ]; then break; fi
     sleep 3
   done
 fi

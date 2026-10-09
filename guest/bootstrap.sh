@@ -38,7 +38,7 @@ if curl --noproxy '*' --connect-timeout 2 --max-time 4 -Is https://downloads.cla
   echo 'CLAUDE-ISOLATION: FAILURE direct-network-open' > /dev/console
   exit 1
 fi
-if curl --retry 3 --retry-all-errors --fail --silent --show-error --proxy http://10.0.2.100:7890 --connect-timeout 30 --max-time 90 https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; then
+if curl --retry 1 --retry-all-errors --fail --silent --show-error --proxy http://10.0.2.100:7890 --connect-timeout 10 --max-time 25 https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; then
   printf '%s\n' 'CLAUDE-ISOLATION: direct-denied proxy-working' > /dev/console
 else
   printf '%s\n' 'CLAUDE-ISOLATION: direct-denied proxy-unavailable' > /dev/console
