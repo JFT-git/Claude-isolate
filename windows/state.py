@@ -22,11 +22,27 @@ def metadata(cfg):
     return Path(cfg['disk']).parent / 'state.json'
 
 
+def stable_command(command):
+    """The QEMU arguments that define the guest's hardware.
+
+    The paused-start flag and the display backend are not part of the saved
+    machine, so a state saved by a hidden first-run boot restores in a window.
+    """
+    result, skip = [], False
+    for item in command:
+        if skip:
+            skip = False
+        elif item == '-display':
+            skip = True
+        elif item != '-S':
+            result.append(item)
+    return result
+
+
 def identity(cfg, command):
     # Restoring requires the same QEMU, devices and memory layout; any
     # change of resources, accelerator or installation invalidates it.
-    stable = [item for item in command if item != '-S']
-    return hashlib.sha256(json.dumps(dict(command=stable, revision=cfg.get('guest_revision')),
+    return hashlib.sha256(json.dumps(dict(command=stable_command(command), revision=cfg.get('guest_revision')),
                                      sort_keys=True).encode()).hexdigest()
 
 

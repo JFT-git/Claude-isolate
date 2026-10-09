@@ -10,6 +10,7 @@ import shutil
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 
@@ -20,7 +21,7 @@ import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '0.4.0'
+VERSION = '0.4.1'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
@@ -208,23 +209,24 @@ def select_acceleration(cfg):
     return 'tcg' if cfg.get('whpx_failed') else acceleration()
 
 
-def start_environment(path, cfg):
+def start_environment(path, cfg, offline=False):
     cfg['accelerator'] = select_acceleration(cfg)
     cfg['whpx_cpu'] = whpx_cpu() if os.name == 'nt' else 'qemu64'
     write_config(path, cfg)
-    emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
+    if not offline:
+        emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
     sys.argv = [sys.argv[0], 'start', '--config', str(path)]
     started = time.monotonic()
     try:
         try:
-            environment.main(raise_errors=True)
+            environment.main(raise_errors=True, offline=offline)
         except environment.RestoreFailed:
             from windows import state
             state.discard(cfg)
             emit('Быстрый запуск не удался. Запускаю Linux обычным способом; диск и файлы сохранены.',
                  running=False)
             started = time.monotonic()
-            environment.main(raise_errors=True)
+            environment.main(raise_errors=True, offline=offline)
     except subprocess.CalledProcessError as error:
         # environment has already reaped QEMU, closed the private SSH bridge,
         # revoked the lease and released the disk lock before we retry.
@@ -242,7 +244,93 @@ def start_environment(path, cfg):
              'он медленнее. Диск Linux сохранён.', accelerator='tcg', running=False)
         # A fresh lease must still use the original verified exit IP. An
         # automatic recovery never silently accepts a VPN/exit change.
-        environment.main(raise_errors=True, expected_exit_ip=error.initial_exit_ip)
+        environment.main(raise_errors=True, expected_exit_ip=error.initial_exit_ip, offline=offline)
+
+
+PREBOOT_TIMEOUT = 1800
+PREBOOT_SETTLE = 150
+ANSI = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def boot_text(path, limit=262144):
+    try:
+        with Path(path).open('rb') as source:
+            source.seek(0, os.SEEK_END)
+            source.seek(max(0, source.tell() - limit))
+            return ANSI.sub('', source.read().decode('utf-8', errors='replace'))
+    except OSError:
+        return ''
+
+
+def preboot(path, cfg, timeout=None, settle=None, poll=1.0):
+    """Run the guest's one-time setup now and keep the result for fast start.
+
+    First boot creates the user and desktop, which takes minutes under
+    software emulation. It needs no network, so it runs here, hidden, with
+    network access never granted (and no VPN needed). Its memory is saved;
+    the first real start then restores it in seconds. Any failure only
+    costs the speed-up: the disk stays valid and starts normally.
+    """
+    from windows import state
+    timeout = PREBOOT_TIMEOUT if timeout is None else timeout
+    settle = PREBOOT_SETTLE if settle is None else settle
+    state.discard(cfg)
+    Path(cfg['boot_log']).unlink(missing_ok=True)
+    outcome = dict(error=None)
+    finished = threading.Event()
+    started = time.monotonic()
+
+    def watch():
+        ready_at = reported = None
+        try:
+            while not finished.wait(poll):
+                now = time.monotonic()
+                text = boot_text(cfg['boot_log'])
+                if 'CLAUDE-ISOLATION: FAILURE' in text:
+                    raise RuntimeError('Первая настройка Linux сообщила об ошибке')
+                if now - started > timeout:
+                    raise RuntimeError('Первая настройка Linux не завершилась вовремя')
+                if ready_at is None and 'CLAUDE-ISOLATION: desktop-ready' in text:
+                    ready_at = now
+                    emit('Рабочий стол готов. Сохраняю состояние для быстрого запуска…',
+                         accelerator=cfg.get('accelerator'))
+                if ready_at is not None and ('CLAUDE-ISOLATION: session-idle' in text
+                                             or now - ready_at > settle):
+                    break
+                if reported is None or now - reported >= 15:
+                    reported = now
+                    minutes, seconds = divmod(int(now - started), 60)
+                    emit(f'Первая настройка Linux (один раз, без сети): {minutes}:{seconds:02d}. '
+                         'Затем запуск будет занимать секунды.', accelerator=cfg.get('accelerator'))
+            else:
+                return
+            qmp(cfg, 'suspend')
+        except Exception as error:
+            outcome['error'] = str(error)
+            environment.ABORT.set()
+
+    environment.ABORT.clear()
+    os.environ['CLAUDE_HEADLESS'] = '1'
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+    try:
+        emit('Первая настройка Linux выполняется один раз и без сети; VPN для неё не нужен.',
+             accelerator=cfg.get('accelerator') or select_acceleration(cfg))
+        start_environment(path, cfg, offline=True)
+    except (subprocess.SubprocessError, RuntimeError, OSError) as error:
+        outcome['error'] = outcome['error'] or str(error)
+    finally:
+        finished.set()
+        watcher.join(timeout=10)
+        os.environ.pop('CLAUDE_HEADLESS', None)
+    if state.exists(cfg):
+        emit('Linux подготовлен. Первый запуск будет быстрым.')
+        return True
+    state.discard(cfg)
+    emit('Не удалось подготовить быстрый запуск'
+         + (': ' + outcome['error'] if outcome['error'] else '')
+         + '. Linux настроится при первом запуске; это займёт несколько минут.')
+    return False
 
 
 def prepare(data, cfg):
@@ -264,7 +352,10 @@ def prepare(data, cfg):
     write_config(data / 'environment.json', cfg)
     environment.prepare(cfg, base, digest)
     # Retain the signed base as a maintenance cache for future guest updates.
-    emit('Среда подготовлена. Приложения уже установлены; первый запуск настроит рабочий стол.')
+    emit('Среда подготовлена. Приложения уже установлены.')
+    if os.environ.get('CLAUDE_SKIP_PREBOOT') == '1':
+        return
+    preboot(data / 'environment.json', cfg)
 
 
 def qmp(cfg, execute):

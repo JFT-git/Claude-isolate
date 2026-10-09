@@ -7,6 +7,14 @@ export http_proxy="$HTTP_PROXY"
 export https_proxy="$HTTP_PROXY"
 export NO_PROXY=localhost,127.0.0.1
 export no_proxy="$NO_PROXY"
+# The autostart entry waits until the host permits network access. A guest
+# prepared and saved without network resumes here once the VPN check passes.
+if [ "${CLAUDE_WAIT_NETWORK:-}" = 1 ]; then
+  until curl --fail --silent --proxy "$HTTP_PROXY" --connect-timeout 5 --max-time 20 \
+      https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; do
+    sleep 3
+  done
+fi
 # No flag disables Chromium's sandbox. Child processes that ignore the
 # proxy cannot reach the Internet because of the hypervisor and firewall.
 exec claude-desktop --force-device-scale-factor=1.5 --password-store=basic --proxy-server="$HTTP_PROXY" "$@"

@@ -539,7 +539,8 @@ def main():
             print('Preparing Ubuntu with the packaged executable…', flush=True)
             prepared = subprocess.run([str(core), 'prepare', '--data', str(path.parent)],
                                       stdout=output, stderr=subprocess.STDOUT,
-                                      creationflags=subprocess.CREATE_NO_WINDOW, timeout=600)
+                                      creationflags=subprocess.CREATE_NO_WINDOW, timeout=600,
+                                      env=dict(os.environ, CLAUDE_SKIP_PREBOOT='1'))
         if prepared.returncode:
             print((report / 'prepare.log').read_text(encoding='utf-8', errors='replace')[-12000:])
             raise RuntimeError('Packaged first-run setup failed')

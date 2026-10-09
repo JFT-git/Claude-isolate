@@ -147,6 +147,10 @@ def command(cfg, check=True):
     arch = cfg['arch']
     system = platform.system()
     display = cfg.get('display', 'gtk') if system == 'Windows' else None
+    # The hidden first-run boot has no window; the saved state still restores
+    # into one because the display backend is not part of the guest hardware.
+    if system == 'Windows' and os.environ.get('CLAUDE_HEADLESS') == '1':
+        display = 'none'
     if system == 'Windows' and display not in ('gtk', 'sdl', 'none'):
         raise ValueError('Unsupported Windows display')
     native = (platform.machine().lower() in ('arm64', 'aarch64')) == (arch == 'aarch64')
@@ -261,7 +265,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/claude-desktop-ready
-TimeoutStartSec=330
+TimeoutStartSec=480
 RemainAfterExit=yes
 Restart=on-failure
 RestartSec=5
@@ -497,7 +501,16 @@ class RestoreFailed(RuntimeError):
     """A saved guest state could not be loaded; a normal boot may follow."""
 
 
-def main(*, raise_errors=False, expected_exit_ip=None):
+class LaunchAbandoned(RuntimeError):
+    """The owner of this process asked it to stop the guest it started."""
+
+
+# Set in-process by the Windows launcher to abandon its hidden first-run boot
+# (never reachable from the control mailbox, which cannot stop QEMU abruptly).
+ABORT = threading.Event()
+
+
+def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['check', 'prepare', 'start', 'plan', 'relay', 'country'])
     parser.add_argument('--config', default=str(ROOT / 'environment.json'))
@@ -564,7 +577,11 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                             routes = RouteWatcher(events.pause, failure=lambda reason: network_guard.revoke(lease, status_path, reason))
                             routes.start()
                         startup_deadline = time.monotonic() + 30
-                        while True:
+                        result = None
+                        # The first-run preparation never has network access:
+                        # no lease is ever granted, so the relay refuses every
+                        # guest connection. A VPN is not needed to prepare.
+                        while not offline:
                             initial_generation = events.snapshot()
                             result = network_guard.probe(cfg.get('proxy_port'), cfg['network_mode'])
                             if not result['allowed']:
@@ -576,9 +593,10 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                             if time.monotonic() >= startup_deadline:
                                 raise RuntimeError('Сеть меняется во время запуска. Дождитесь стабильного подключения.')
                             time.sleep(.2)
-                        watcher = threading.Thread(target=network_guard.monitor,
-                            args=(cfg.get('proxy_port'), lease, stop, cfg['network_mode'], result, status_path, events), daemon=True)
-                        watcher.start()
+                        if not offline:
+                            watcher = threading.Thread(target=network_guard.monitor,
+                                args=(cfg.get('proxy_port'), lease, stop, cfg['network_mode'], result, status_path, events), daemon=True)
+                            watcher.start()
                         env = dict(os.environ, CLAUDE_NETWORK_LEASE=str(lease))
                         if status_path:
                             env['CLAUDE_NETWORK_REVOKE'] = str(Path(status_path).with_suffix('.revoked'))
@@ -594,13 +612,19 @@ def main(*, raise_errors=False, expected_exit_ip=None):
                                 control.start()
                                 bridge.start()
                                 control.wait_ready()
-                            if proc.poll() is None:
+                            if proc.poll() is None and not offline:
                                 print(json.dumps({'message': 'Linux восстановлен' if control and control.restored
                                                   else 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)
-                            proc.wait()
+                            while True:
+                                try:
+                                    proc.wait(timeout=.5)
+                                    break
+                                except subprocess.TimeoutExpired:
+                                    if ABORT.is_set():
+                                        raise LaunchAbandoned('Запуск Linux прерван')
                             if proc.returncode:
                                 error = subprocess.CalledProcessError(proc.returncode, cmd)
-                                error.initial_exit_ip = result['ip']
+                                error.initial_exit_ip = result['ip'] if result else None
                                 error.network_locked = lease.with_suffix('.revoked').exists()
                                 raise error
                             if control and control.suspended:

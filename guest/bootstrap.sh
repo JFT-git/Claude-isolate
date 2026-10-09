@@ -38,14 +38,17 @@ if curl --noproxy '*' --connect-timeout 2 --max-time 4 -Is https://downloads.cla
   echo 'CLAUDE-ISOLATION: FAILURE direct-network-open' > /dev/console
   exit 1
 fi
-curl --retry 3 --retry-all-errors --fail --silent --show-error --proxy http://10.0.2.100:7890 --connect-timeout 30 --max-time 90 https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null
-printf '%s\n' 'CLAUDE-ISOLATION: direct-denied proxy-working' > /dev/console
+if curl --retry 3 --retry-all-errors --fail --silent --show-error --proxy http://10.0.2.100:7890 --connect-timeout 30 --max-time 90 https://downloads.claude.ai/claude-desktop/key.asc -o /dev/null; then
+  printf '%s\n' 'CLAUDE-ISOLATION: direct-denied proxy-working' > /dev/console
+else
+  printf '%s\n' 'CLAUDE-ISOLATION: direct-denied proxy-unavailable' > /dev/console
+fi
 install -d -o claude -g claude /home/claude/.config /home/claude/.config/autostart /home/claude/Desktop
 cat > /home/claude/.config/autostart/claude.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Claude Desktop
-Exec=/usr/local/bin/claude-isolated
+Exec=env CLAUDE_WAIT_NETWORK=1 /usr/local/bin/claude-isolated
 EOF
 /usr/local/sbin/claude-display-install
 # Desktop/menu launch paths all use the same proxy and password-store settings.

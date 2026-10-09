@@ -16,6 +16,52 @@ from windows import gnupg
 
 
 class WindowsBackendTests(unittest.TestCase):
+    def test_identity_ignores_pause_and_display_flags(self):
+        from windows import state
+        base = ['qemu', '-m', '1']
+        a = state.identity({'guest_revision': 'r'}, base + ['-S', '-display', 'none'])
+        b = state.identity({'guest_revision': 'r'}, base + ['-display', 'gtk'])
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, state.identity({'guest_revision': 'r'}, ['qemu', '-m', '2']))
+
+    def test_preboot_suspends_when_desktop_is_ready_and_reports_state(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'boot.log'
+            cfg = {'boot_log': str(log)}
+
+            def fake_start(path, config, offline=False):
+                self.assertTrue(offline)
+                self.assertEqual(os.environ.get('CLAUDE_HEADLESS'), '1')
+                log.write_text('CLAUDE-ISOLATION: desktop-ready\nCLAUDE-ISOLATION: session-idle\n')
+                time.sleep(.5)
+
+            from windows import state
+            with patch.object(backend, 'start_environment', fake_start), \
+                    patch.object(backend, 'qmp') as qmp, patch.object(backend, 'emit'), \
+                    patch.object(state, 'discard'), patch.object(state, 'exists', return_value=True):
+                self.assertTrue(backend.preboot(Path(folder) / 'e.json', cfg, poll=.05))
+            qmp.assert_called_with(cfg, 'suspend')
+            self.assertNotIn('CLAUDE_HEADLESS', os.environ)
+
+    def test_preboot_failure_abandons_boot_without_failing_prepare(self):
+        with tempfile.TemporaryDirectory() as folder:
+            log = Path(folder) / 'boot.log'
+            cfg = {'boot_log': str(log)}
+
+            def fake_start(path, config, offline=False):
+                log.write_text('CLAUDE-ISOLATION: FAILURE\n')
+                for _ in range(100):
+                    if environment.ABORT.is_set():
+                        raise environment.LaunchAbandoned('x')
+                    time.sleep(.05)
+
+            from windows import state
+            with patch.object(backend, 'start_environment', fake_start), \
+                    patch.object(backend, 'qmp') as qmp, patch.object(backend, 'emit'), \
+                    patch.object(state, 'discard'), patch.object(state, 'exists', return_value=False):
+                self.assertFalse(backend.preboot(Path(folder) / 'e.json', cfg, poll=.05))
+            qmp.assert_not_called()
+
     def test_prepare_routes_existing_guest_to_in_place_upgrade(self):
         from windows import guest_update
         with tempfile.TemporaryDirectory() as temporary:
@@ -72,7 +118,7 @@ class WindowsBackendTests(unittest.TestCase):
                  patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
                 backend.start_environment(path, cfg)
             self.assertEqual(launch.call_args_list[1].kwargs,
-                             {'raise_errors': True, 'expected_exit_ip': '8.8.8.8'})
+                             {'raise_errors': True, 'expected_exit_ip': '8.8.8.8', 'offline': False})
             saved = environment.load_config(path)
             self.assertTrue(saved['whpx_failed'])
             self.assertEqual(saved['whpx_failure_code'], 3489660927)
