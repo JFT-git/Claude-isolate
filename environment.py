@@ -182,7 +182,9 @@ def command(cfg, check=True):
     net = ('user,id=isolated,restrict=on,ipv6=off,'
            'guestfwd=tcp:10.0.2.100:7890-cmd:' + relay_cmd.replace(',', ',,'))
     if system == 'Windows':
-        net = 'user,id=isolated,restrict=on,ipv6=off'
+        # hostfwd binds to localhost only: the host can SSH into the guest,
+        # but no other machine on the network can reach it.
+        net = 'user,id=isolated,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22'
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
@@ -213,6 +215,13 @@ def command(cfg, check=True):
         cmd += ['-device', 'virtio-serial-pci',
                 '-chardev', 'pipe,id=gateway,path=' + pipe + '-gateway',
                 '-device', 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport']
+        # Shared folder: a 9p file system, not a network path. The guest
+        # cannot reach the host's network through it; only this one folder
+        # is visible inside the guest as /home/claude/Shared.
+        shared = Path(cfg['disk']).parent / 'shared'
+        shared.mkdir(parents=True, exist_ok=True)
+        cmd += ['-virtfs', f'local,path={qemu_path(shared)},mount_tag=claude-shared,'
+                f'security_model=none,id=fsdev0']
     if arch == 'aarch64':
         firmware = local_path(cfg['firmware'])
         if check and not firmware.is_file():
@@ -227,12 +236,14 @@ def command(cfg, check=True):
         cmd += ['-qmp', 'pipe:' + cfg['qmp_pipe']]
     if cfg.get('boot_log'):
         cmd[cmd.index('-serial') + 1] = 'file:' + qemu_path(local_path(cfg['boot_log']))
-    # No shared folders, SPICE agent, clipboard channel, host sockets,
-    # microphone, webcam, USB passthrough or forwarded incoming ports.
+    # No SPICE agent, clipboard channel, host sockets, microphone, webcam,
+    # USB passthrough or forwarded incoming ports beyond localhost:2222.
     return cmd
 
 
 def cloud_config(cfg=None):
+    if cfg is None:
+        cfg = {}
     def file(path, content, permissions='0644'):
         return dict(path=path, content=content, owner='root:root', permissions=permissions)
     files = [
@@ -282,7 +293,10 @@ WantedBy=graphical.target
         file('/etc/apt/apt.conf.d/80-isolated-proxy',
              'Acquire::http::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::https::Proxy "http://10.0.2.100:7890";\n'
-             'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n')]
+             'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n'),
+        file('/etc/fstab', 'claude-shared /home/claude/Shared 9p trans=virtio,version=9p2000.L,rw,_netdev 0 0\n',
+             '0644'),
+        file('/home/claude/.ssh/authorized_keys', cfg.get('ssh_pubkey', ''), '0600')]
     data = dict(hostname='isolated-desktop', manage_etc_hosts=True,
                 disable_root=True, ssh_pwauth=False,
                 users=[{'name': 'claude', 'gecos': 'Desktop user',
@@ -291,14 +305,16 @@ WantedBy=graphical.target
                          https_proxy='http://10.0.2.100:7890'),
                 package_update=False,
                 # Only modules this guest needs: each stage costs seconds
-                # under software emulation. sshd is masked, so no host keys.
+                # under software emulation. sshd is enabled for host access.
                 cloud_init_modules=['bootcmd', 'write_files', 'growpart', 'resizefs', 'set_hostname',
                                     'update_hostname', 'update_etc_hosts', 'users_groups'],
                 cloud_config_modules=['runcmd'],
                 cloud_final_modules=['scripts_user'],
-                ssh_genkeytypes=[],
+                ssh_genkeytypes=['ed25519'],
                 write_files=files,
-                runcmd=[['systemctl', 'mask', '--now', 'ssh.service', 'ssh.socket'],
+                runcmd=[['systemctl', 'unmask', 'ssh.service', 'ssh.socket'],
+                        ['systemctl', 'enable', '--now', 'ssh.socket'],
+                        ['install', '-d', '-o', 'claude', '-g', 'claude', '/home/claude/Shared'],
                         ['systemctl', 'daemon-reload'],
                         ['systemctl', 'enable', '--now', 'claude-setup.service']])
     # JSON is valid YAML, including for cloud-init. No YAML dependency needed.

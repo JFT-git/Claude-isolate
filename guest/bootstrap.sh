@@ -172,6 +172,9 @@ if [ -f /etc/claude-preinstalled ]; then
 fi
 systemctl enable lightdm
 systemctl restart lightdm
+# Mount the 9p shared folder on every boot (fstab uses _netdev).
+install -d -o claude -g claude /home/claude/Shared
+mount /home/claude/Shared 2>/dev/null || true
 touch /etc/cloud/cloud-init.disabled
 # Publish completion only after all persistent boot settings are installed
 # and the display manager has started. A retry can outlive cloud-init's first

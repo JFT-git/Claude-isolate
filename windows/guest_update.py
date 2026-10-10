@@ -18,7 +18,7 @@ from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
 # Guest payload revision is independent of controller-only releases.
-REVISION = '0.4.1'
+REVISION = '0.4.2'
 IDLE_SERVICE = '[Service]\nNice=19\nCPUSchedulingPolicy=idle\nIOSchedulingClass=idle\n'
 
 
