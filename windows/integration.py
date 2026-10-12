@@ -515,7 +515,10 @@ def main():
         directory = Path(temporary)
         print('Verifying bundled QEMU with no external tools in PATH…', flush=True)
         executable = ROOT / 'dist/windows/Claude Isolate/runtime/qemu/qemu-system-x86_64.exe'
-        os.environ['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
+        # Keep only Windows system directories: System32 plus the bundled
+        # OpenSSH client (ssh-keygen) that prepare needs to mint the host key.
+        system32 = Path(os.environ['SystemRoot']) / 'System32'
+        os.environ['PATH'] = str(system32) + os.pathsep + str(system32 / 'OpenSSH')
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
         memory_mb = args.memory_mb or (3072 if args.desktop else 2048)
