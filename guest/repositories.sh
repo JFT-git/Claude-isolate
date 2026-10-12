@@ -17,7 +17,12 @@ fingerprint=$(gpg --show-keys --with-colons /etc/apt/keyrings/packages.mozilla.o
 test "$fingerprint" = '35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3'
 printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main' > /etc/apt/sources.list.d/mozilla.list
 # Enable Ubuntu universe for xclip (clipboard bridge dependency).
-sed -i 's/^# deb http/deb http/; s/ universe$/ universe main/' /etc/apt/sources.list 2>/dev/null || true
+# Ubuntu 24.04 uses deb822 format (.sources file) or legacy format (.list).
+if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+  sed -i 's/^# Types: .*$/Types: deb\nComponents: main universe/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+elif [ -f /etc/apt/sources.list ]; then
+  sed -i 's/^# deb http/deb http/; s/ universe$/ universe main/' /etc/apt/sources.list 2>/dev/null || true
+fi
 apt-get update -qq 2>/dev/null || true
 cat > /etc/apt/preferences.d/mozilla <<'EOF'
 Package: *
