@@ -319,6 +319,18 @@ pynacl==1.6.2 \
     --hash=sha256:d29bfe37e20e015a7d8b23cfc8bd6aa7909c92a1b8f41ee416bbb3e79ef182b2 \
     --hash=sha256:fe9847ca47d287af41e82be1dd5e23023d3c31a951da134121ab02e42ac218c9
     # via paramiko
+pyside6==6.8.1.1 \
+    --hash=sha256:60a2551053fa69845b893fb821507e2cc89d3a8a8b43726d568acd1250ad44fb
+    # via -r requirements-windows.in
+pyside6-addons==6.8.1.1 \
+    --hash=sha256:d8ae86944ac48cc9891666cf71565acebd403a953d0e050be4d41ac490788d0a
+    # via pyside6
+pyside6-essentials==6.8.1.1 \
+    --hash=sha256:085f12e16db31eb0e802b21c64eabf582f54db6c44463a1f5e1814d897b1f2c0
+    # via pyside6
+shiboken6==6.8.1.1 \
+    --hash=sha256:26f7041c77058a8ecfb9345caa187250b199de79cfb37e33936e5fbd468a7780
+    # via pyside6
 pywin32-ctypes==0.2.3 \
     --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8 \
     --hash=sha256:d162dc04946d704503b2edc4d55f3dba5c1d539ead017afa00142c38b9885755
