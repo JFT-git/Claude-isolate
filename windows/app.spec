@@ -5,7 +5,7 @@ root = Path(SPECPATH).parent
 core = Analysis([str(root / 'windows/core.py')], pathex=[str(root)],
                 datas=[(str(root / 'guest'), 'guest')] + [(str(p), '.') for p in root.glob('guest-image-*.json')], hiddenimports=['pycdlib'])
 gui = Analysis([str(root / 'windows/app.py')], pathex=[str(root)],
-               hiddenimports=['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets'])
+               hiddenimports=['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'windows.app_qt'])
 core_exe = EXE(PYZ(core.pure), core.scripts, [], exclude_binaries=True,
                name='Claude Isolate Core', console=True, upx=False,
                version=str(root / 'windows/version.txt'))
