@@ -335,17 +335,13 @@ def preboot(path, cfg, timeout=None, settle=None, poll=1.0):
 
 def prepare(data, cfg):
     disk, seed = Path(cfg['disk']), Path(cfg['seed'])
-    # Shared folder: the host side of the 9p mount. Created here so the
-    # guest's fstab entry mounts on the first boot.
+    # Shared folder on the host; Windows syncs it over SFTP to /home/claude/Shared.
     (Path(cfg['disk']).parent / 'shared').mkdir(parents=True, exist_ok=True)
-    # SSH key for host -> guest access (localhost:2222). Generated once,
-    # the public key is delivered to the guest via the seed ISO.
+    from windows.ssh_keys import ensure_client_keypair
     ssh_key = data / 'tools' / 'ssh_host_key'
-    if not ssh_key.exists():
-        ssh_key.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(['ssh-keygen', '-t', 'ed25519', '-N', '', '-f', str(ssh_key)],
-                        check=True, capture_output=True)
-        cfg['ssh_pubkey'] = ssh_key.with_suffix('.pub').read_text(encoding='utf-8')
+    pubkey = ensure_client_keypair(ssh_key)
+    if cfg.get('ssh_pubkey') != pubkey:
+        cfg['ssh_pubkey'] = pubkey
         write_config(data / 'environment.json', cfg)
     if disk.is_file() and seed.is_file():
         from windows.guest_update import upgrade
