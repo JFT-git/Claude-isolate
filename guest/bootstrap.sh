@@ -169,6 +169,10 @@ if [ -f /etc/claude-preinstalled ]; then
   # timers during the first setup, which must not download packages.
   systemctl unmask apt-daily.timer apt-daily-upgrade.timer
   systemctl enable apt-daily.timer apt-daily-upgrade.timer
+  # preinstall.sh masks ssh to keep the build quiet; restore the enabled state
+  # the integration audit expects (and a normal first boot would have).
+  systemctl unmask ssh.service ssh.socket 2>/dev/null || true
+  systemctl enable ssh.service ssh.socket 2>/dev/null || true
 fi
 systemctl enable lightdm
 systemctl restart lightdm
