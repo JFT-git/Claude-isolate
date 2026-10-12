@@ -25,3 +25,4 @@ claude-desktop
 firefox
 
 openssh-client
+xclip

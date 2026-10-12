@@ -35,6 +35,8 @@ test "$(systemctl is-enabled ssh.service)" = enabled
 # Shared folder is mounted via 9p on every boot.
 test -d /home/claude/Shared
 grep -q 'claude-shared /home/claude/Shared 9p' /etc/fstab
+# Clipboard bridge service is enabled.
+test "$(systemctl is-enabled claude-clipboard-bridge.service)" = enabled
 test "$(systemctl show -p LoadState --value console-setup.service)" = masked
 test -f /etc/udev/rules.d/90-console-setup.rules
 test ! -s /etc/udev/rules.d/90-console-setup.rules

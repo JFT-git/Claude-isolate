@@ -214,7 +214,9 @@ def command(cfg, check=True):
             raise ValueError('Invalid Windows control pipe')
         cmd += ['-device', 'virtio-serial-pci',
                 '-chardev', 'pipe,id=gateway,path=' + pipe + '-gateway',
-                '-device', 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport']
+                '-device', 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport',
+                '-chardev', 'pipe,id=clipboard,path=' + pipe + '-clipboard',
+                '-device', 'virtserialport,chardev=clipboard,name=claude.clipboard,id=clipboardport']
         # Shared folder: a 9p file system, not a network path. The guest
         # cannot reach the host's network through it; only this one folder
         # is visible inside the guest as /home/claude/Shared.
@@ -267,6 +269,7 @@ WantedBy=multi-user.target
         file('/usr/local/sbin/claude-repositories', (ROOT / 'guest/repositories.sh').read_text(), '0700'),
         file('/usr/local/sbin/bootstrap-claude', (ROOT / 'guest/bootstrap.sh').read_text(), '0700'),
         file('/usr/local/sbin/claude-desktop-ready', (ROOT / 'guest/desktop-ready.sh').read_text(), '0700'),
+        file('/usr/local/sbin/claude-clipboard-bridge', (ROOT / 'guest/clipboard-bridge.sh').read_text(), '0700'),
         file('/etc/systemd/system/claude-desktop-ready.service', '''[Unit]
 Description=Report isolated graphical session readiness
 After=lightdm.service
@@ -283,6 +286,19 @@ RestartSec=5
 [Install]
 WantedBy=graphical.target
 '''),
+        file('/etc/systemd/system/claude-clipboard-bridge.service', '''[Unit]
+Description=Clipboard bridge between host and guest
+After=lightdm.service
+Wants=lightdm.service
+ConditionPathExists=/var/lib/claude-isolation-ready
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/claude-clipboard-bridge
+Restart=on-failure
+RestartSec=3
+[Install]
+WantedBy=graphical.target
+'''),
         file('/usr/local/bin/claude-isolated', (ROOT / 'guest/launch.sh').read_text(), '0755'),
         file('/usr/local/sbin/claude-display-install', (ROOT / 'guest/display-setup.sh').read_text(), '0700'),
         file('/etc/lightdm/lightdm.conf.d/50-isolated.conf',
@@ -295,8 +311,7 @@ WantedBy=graphical.target
              'Acquire::https::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n'),
         file('/etc/fstab', 'claude-shared /home/claude/Shared 9p trans=virtio,version=9p2000.L,rw,_netdev 0 0\n',
-             '0644'),
-        file('/home/claude/.ssh/authorized_keys', cfg.get('ssh_pubkey', ''), '0600')]
+             '0644')]
     data = dict(hostname='isolated-desktop', manage_etc_hosts=True,
                 disable_root=True, ssh_pwauth=False,
                 users=[{'name': 'claude', 'gecos': 'Desktop user',
@@ -315,8 +330,14 @@ WantedBy=graphical.target
                 runcmd=[['systemctl', 'unmask', 'ssh.service', 'ssh.socket'],
                         ['systemctl', 'enable', '--now', 'ssh.socket'],
                         ['install', '-d', '-o', 'claude', '-g', 'claude', '/home/claude/Shared'],
+                        ['install', '-d', '-o', 'claude', '-g', 'claude', '/home/claude/.ssh'],
+                        ['sh', '-c', 'echo ' + shlex.quote(cfg.get('ssh_pubkey', '')) +
+                         ' > /home/claude/.ssh/authorized_keys'],
+                        ['chmod', '600', '/home/claude/.ssh/authorized_keys'],
+                        ['chown', 'claude:claude', '/home/claude/.ssh/authorized_keys'],
                         ['systemctl', 'daemon-reload'],
-                        ['systemctl', 'enable', '--now', 'claude-setup.service']])
+                        ['systemctl', 'enable', '--now', 'claude-setup.service'],
+                        ['systemctl', 'enable', '--now', 'claude-clipboard-bridge.service']])
     # JSON is valid YAML, including for cloud-init. No YAML dependency needed.
     if platform.system() == 'Windows':
         from windows.serial_gateway import boot_command
