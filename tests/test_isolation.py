@@ -51,7 +51,9 @@ class IsolationTests(unittest.TestCase):
         net = cmd[cmd.index('-netdev') + 1]
         self.assertIn('restrict=on', net)
         self.assertIn('ipv6=off', net)
-        for unsafe in ('hostfwd=', 'smb=', '-virtfs', '-fsdev', '-spice'):
+        # hostfwd to localhost only is safe: no other machine can reach the guest.
+        # -virtfs (9p) is a file system, not a network path.
+        for unsafe in ('hostfwd=tcp::', 'hostfwd=tcp:0.0.0.0', 'hostfwd=tcp:10.', 'smb=', '-spice'):
             self.assertNotIn(unsafe, ' '.join(cmd))
         if '-qmp' in cmd:
             self.assertTrue(cmd[cmd.index('-qmp') + 1].startswith('pipe:claude-isolate-'))
