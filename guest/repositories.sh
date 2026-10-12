@@ -16,6 +16,9 @@ curl --retry 5 --retry-all-errors --fail --silent --show-error \
 fingerprint=$(gpg --show-keys --with-colons /etc/apt/keyrings/packages.mozilla.org.asc | awk -F: '$1=="fpr" {print $10; exit}')
 test "$fingerprint" = '35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3'
 printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main' > /etc/apt/sources.list.d/mozilla.list
+# Enable Ubuntu universe for xclip (clipboard bridge dependency).
+sed -i 's/^# deb http/deb http/; s/ universe$/ universe main/' /etc/apt/sources.list 2>/dev/null || true
+apt-get update -qq 2>/dev/null || true
 cat > /etc/apt/preferences.d/mozilla <<'EOF'
 Package: *
 Pin: origin packages.mozilla.org
