@@ -1,7 +1,7 @@
 #!/bin/sh
 # Guest-side clipboard bridge: syncs text clipboard with the host via a
 # virtio-serial port. Images are transferred as base64-encoded PNG.
-set -eu
+# Exits cleanly if the port is not available (e.g. CI without -virtfs).
 PORT=/dev/virtio-ports/claude-clipboard
 [ -c "$PORT" ] || exit 0
 export DISPLAY=:0

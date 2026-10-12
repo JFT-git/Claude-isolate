@@ -310,7 +310,7 @@ WantedBy=graphical.target
              'Acquire::http::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::https::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n'),
-        file('/etc/fstab', 'claude-shared /home/claude/Shared 9p trans=virtio,version=9p2000.L,rw,_netdev 0 0\n',
+        file('/etc/fstab', 'claude-shared /home/claude/Shared 9p trans=virtio,version=9p2000.L,rw,_netdev,noauto 0 0\n',
              '0644')]
     data = dict(hostname='isolated-desktop', manage_etc_hosts=True,
                 disable_root=True, ssh_pwauth=False,

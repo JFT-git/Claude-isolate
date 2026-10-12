@@ -172,7 +172,8 @@ if [ -f /etc/claude-preinstalled ]; then
 fi
 systemctl enable lightdm
 systemctl restart lightdm
-# Mount the 9p shared folder on every boot (fstab uses _netdev).
+# Mount the 9p shared folder on every boot (only if the device exists;
+# CI boots without -virtfs and the mount is noauto in fstab).
 install -d -o claude -g claude /home/claude/Shared
 mount /home/claude/Shared 2>/dev/null || true
 touch /etc/cloud/cloud-init.disabled
