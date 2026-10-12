@@ -19,9 +19,13 @@ printf '%s\n' 'deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https:
 # Enable Ubuntu universe for xclip (clipboard bridge dependency).
 # Ubuntu 24.04 uses deb822 format (.sources file) or legacy format (.list).
 if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-  sed -i 's/^# Types: .*$/Types: deb\nComponents: main universe/' /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+  if ! grep -q 'Components:.*universe' /etc/apt/sources.list.d/ubuntu.sources; then
+    sed -i '/^Components:/ s/main$/main universe/' /etc/apt/sources.list.d/ubuntu.sources
+  fi
 elif [ -f /etc/apt/sources.list ]; then
-  sed -i 's/^# deb http/deb http/; s/ universe$/ universe main/' /etc/apt/sources.list 2>/dev/null || true
+  if ! grep -q ' universe' /etc/apt/sources.list; then
+    sed -i '0,/^deb /s//deb /; s/ main$/ main universe/' /etc/apt/sources.list
+  fi
 fi
 apt-get update -qq 2>/dev/null || true
 cat > /etc/apt/preferences.d/mozilla <<'EOF'

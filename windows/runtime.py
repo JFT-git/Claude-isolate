@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 import ubuntu_image
 from windows import gnupg
@@ -41,23 +42,44 @@ def qemu_files(source):
     return sorted(selected)
 
 
+def copy_file(source, destination, *, follow_symlinks=True):
+    # Python 3.12's Win32 CopyFile2 reports ERROR_PATH_NOT_FOUND for some
+    # vendor files even when both paths exist. A direct read/write still works.
+    # Defender can briefly hide a new directory, so retry a few times.
+    source, destination = Path(source), Path(destination)
+    last = None
+    for attempt in range(5):
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            try:
+                shutil.copyfile(source, destination)
+                shutil.copystat(source, destination, follow_symlinks=follow_symlinks)
+            except OSError:
+                destination.write_bytes(source.read_bytes())
+            return destination
+        except OSError as error:
+            last = error
+            time.sleep(0.05 * (attempt + 1))
+    raise OSError(f'Cannot copy {source} -> {destination}: {last}') from last
+
+
 def copy_qemu(source, target):
-    target.mkdir(parents=True)
+    target.mkdir(parents=True, exist_ok=True)
     for path in qemu_files(source):
-        shutil.copy2(path, target / path.name)
+        copy_file(path, target / path.name)
     share = target / 'share'
-    share.mkdir()
+    share.mkdir(exist_ok=True)
     for name in FIRMWARE:
-        shutil.copy2(source / 'share' / name, share / name)
+        copy_file(source / 'share' / name, share / name)
     for name in ('icons', 'keymaps'):
-        shutil.copytree(source / 'share' / name, share / name)
+        shutil.copytree(source / 'share' / name, share / name, dirs_exist_ok=True, copy_function=copy_file)
     for name in ('COPYING', 'COPYING.LIB', 'README.rst', 'VERSION'):
-        shutil.copy2(source / name, target / name)
+        copy_file(source / name, target / name)
 
 
 def bundle(folder):
     target = folder / 'runtime'
-    target.mkdir()
+    target.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='claude-runtime-') as temporary:
         directory = Path(temporary)
         installer = directory / 'qemu.exe'
@@ -73,7 +95,7 @@ def bundle(folder):
                        check=True, capture_output=True, timeout=180)
         copy_qemu(extracted, target / 'qemu')
         gpg = gnupg.install(directory)
-        shutil.copytree(gpg.parent.parent, target / 'GnuPG')
+        shutil.copytree(gpg.parent.parent, target / 'GnuPG', dirs_exist_ok=True)
     manifest = {
         'qemu': {'version': '11.1.0', 'url': QEMU_URL, 'sha512': QEMU_SHA512},
         'gnupg': {'version': gnupg.VERSION, 'url': gnupg.URL, 'sha256': gnupg.SHA256},

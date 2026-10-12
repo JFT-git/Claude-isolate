@@ -72,6 +72,29 @@ class IsolationTests(unittest.TestCase):
         self.assertNotIn('ct state established', output)
         self.assertIn('ip daddr 10.0.2.100 tcp dport 7890 accept', output)
 
+    def test_firewall_allows_localhost_ssh_from_slirp(self):
+        rules = (environment.ROOT / 'guest/firewall.nft').read_text()
+        input_chain = rules.split('chain input {', 1)[1].split('chain forward {', 1)[0]
+        self.assertIn('ip saddr 10.0.2.0/24 tcp dport 22 accept', input_chain)
+        output = rules.split('chain output {', 1)[1]
+        self.assertIn('ip daddr 10.0.2.0/24 tcp sport 22 accept', output)
+        self.assertNotIn('ct state established', output)
+
+    def test_cloud_init_clipboard_is_python_and_shared_folder_is_not_9p(self):
+        cfg = json.loads(environment.cloud_config().split('\n', 1)[1])
+        files = {item['path']: item['content'] for item in cfg['write_files']}
+        script = files['/usr/local/sbin/claude-clipboard-bridge']
+        self.assertTrue(script.startswith('#!/usr/bin/env python3'))
+        self.assertNotIn('IMAGE_PNG:', script)
+        self.assertIn('clipboard-framing', script)
+        guest_framing = files['/usr/local/lib/claude-isolate/clipboard-framing.py'].split('import struct', 1)[1]
+        host_framing = (environment.ROOT / 'windows/clipboard_framing.py').read_text().split('import struct', 1)[1]
+        self.assertEqual(guest_framing, host_framing)
+        blob = json.dumps(cfg)
+        self.assertNotIn('9p trans=virtio', blob)
+        self.assertNotIn('claude-shared-fstab', blob)
+        self.assertNotIn('clipboard-bridge.sh', blob)
+
     def test_relay_rejects_host_request_without_upstream_proxy(self):
         result = subprocess.run(
             [sys.executable, str(environment.ROOT / 'environment.py'),

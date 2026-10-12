@@ -13,7 +13,7 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-DIST = ROOT / 'dist'
+DIST = Path(os.environ['CLAUDE_DIST']) if os.environ.get('CLAUDE_DIST') else ROOT / 'dist'
 sys.path.insert(0, str(ROOT))
 from windows import runtime
 
@@ -66,9 +66,14 @@ def smoke(folder, directory):
 
 def licenses(folder):
     target = folder / 'licenses'
-    target.mkdir()
-    for package in ('pycdlib', 'pyinstaller', 'paramiko', 'cryptography', 'bcrypt', 'pynacl', 'cffi', 'invoke', 'certifi', 'PySide6'):
-        distribution = importlib.metadata.distribution(package)
+    target.mkdir(exist_ok=True)
+    # PySide6-Essentials publishes the PySide6 import name as PySide6_Essentials.
+    for package in ('pycdlib', 'pyinstaller', 'paramiko', 'cryptography', 'bcrypt', 'pynacl', 'cffi', 'invoke', 'certifi',
+                    'PySide6', 'PySide6_Essentials', 'shiboken6'):
+        try:
+            distribution = importlib.metadata.distribution(package)
+        except importlib.metadata.PackageNotFoundError:
+            continue
         for path in distribution.files or []:
             if 'license' in Path(path).name.lower() and path.locate().is_file():
                 shutil.copy2(path.locate(), target / (package + '-' + Path(path).name))
@@ -88,20 +93,38 @@ def main():
     licenses(folder)
     manifest = runtime.bundle(folder)
     print('Bundled runtime:', len(manifest['files']), 'files', flush=True)
+    commit = os.environ.get('CLAUDE_GIT_COMMIT', '').strip()
+    if not commit:
+        try:
+            commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, stderr=subprocess.DEVNULL).decode().strip()
+        except (OSError, subprocess.CalledProcessError):
+            commit = 'unknown'
     (folder / 'BUILD.json').write_text(json.dumps({
         'version': '0.4.2', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
-        'commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT).decode().strip(),
+        'commit': commit,
     }, indent=2), encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='Claude Isolate smoke ') as temporary:
         smoke(folder, Path(temporary))
+    if os.environ.get('CLAUDE_KEEP_BUILD') == '1':
+        keep = DIST / 'app-snapshot'
+        if keep.exists():
+            shutil.rmtree(keep)
+        shutil.copytree(folder, keep)
     compiler = shutil.which('ISCC') or str(Path(os.environ.get('ProgramFiles(x86)', 'C:/Program Files (x86)')) / 'Inno Setup 6/ISCC.exe')
-    run([compiler, str(ROOT / 'windows/setup.iss')])
+    installer_cmd = [compiler]
+    if os.environ.get('CLAUDE_DIST'):
+        installer_cmd.append('/DBuildRoot=' + str(DIST))
+    installer_cmd.append(str(ROOT / 'windows/setup.iss'))
+    run(installer_cmd)
     installer = DIST / 'Claude-isolate-windows-x64-setup.exe'
     with tempfile.TemporaryDirectory(prefix='Claude Isolate installer ') as temporary:
         directory = Path(temporary)
         installed = directory / 'Clean installation Тест'
+        guest_data = directory / 'installer-guest-data'
+        # GUESTDATA must not be the real %LOCALAPPDATA%\\Claude Isolate profile.
+        # The installer upgrade step runs even for /VERYSILENT.
         run([str(installer), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-',
-             '/DIR=' + str(installed), '/TASKS='], timeout=120)
+             '/DIR=' + str(installed), '/GUESTDATA=' + str(guest_data), '/TASKS='], timeout=120)
         data = smoke(installed, directory)
         run([str(installed / 'unins000.exe'), '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'], timeout=120)
         if not (data / 'environment.json').exists():

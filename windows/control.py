@@ -166,7 +166,8 @@ class Control:
                 continue
             last = command['id']
             reply = dict(session=self.session, id=last)
-            if command.get('execute') not in COMMANDS or set(command) != {'session', 'id', 'execute'}:
+            execute = command.get('execute')
+            if execute not in COMMANDS + ('quit',) or set(command) != {'session', 'id', 'execute'}:
                 reply['error'] = 'Unsupported Windows control command'
             elif command['execute'] == 'suspend':
                 try:
@@ -182,6 +183,18 @@ class Control:
                             data = data[pipe.write(data):]
                     except OSError:
                         pass
+                continue
+            elif command['execute'] == 'quit':
+                # Used only to abandon the hidden first-run boot. QEMU exits
+                # without replying, so answer first.
+                reply['return'] = {}
+                write_state(self.files['response'], reply)
+                try:
+                    data = json.dumps(dict(execute='quit', id=uuid.uuid4().hex)).encode() + b'\n'
+                    while data:
+                        data = data[pipe.write(data):]
+                except OSError:
+                    pass
                 continue
             else:
                 reply['return'] = self.exchange(pipe, command['execute'])

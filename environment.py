@@ -217,13 +217,10 @@ def command(cfg, check=True):
                 '-device', 'virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport',
                 '-chardev', 'pipe,id=clipboard,path=' + pipe + '-clipboard',
                 '-device', 'virtserialport,chardev=clipboard,name=claude.clipboard,id=clipboardport']
-        # Shared folder: a 9p file system, not a network path. The guest
-        # cannot reach the host's network through it; only this one folder
-        # is visible inside the guest as /home/claude/Shared.
-        shared = Path(cfg['disk']).parent / 'shared'
-        shared.mkdir(parents=True, exist_ok=True)
-        cmd += ['-virtfs', f'local,path={qemu_path(shared)},mount_tag=claude-shared,'
-                f'security_model=none,id=fsdev0']
+        # QEMU's Windows pipe chardev blocks until a client connects and does
+        # not reconnect. main() opens this clipboard pipe before wait_ready.
+        # Shared folder on Windows: SFTP over localhost:2222 (bundled QEMU lacks virtfs).
+        (Path(cfg['disk']).parent / 'shared').mkdir(parents=True, exist_ok=True)
     if arch == 'aarch64':
         firmware = local_path(cfg['firmware'])
         if check and not firmware.is_file():
@@ -269,7 +266,19 @@ WantedBy=multi-user.target
         file('/usr/local/sbin/claude-repositories', (ROOT / 'guest/repositories.sh').read_text(), '0700'),
         file('/usr/local/sbin/bootstrap-claude', (ROOT / 'guest/bootstrap.sh').read_text(), '0700'),
         file('/usr/local/sbin/claude-desktop-ready', (ROOT / 'guest/desktop-ready.sh').read_text(), '0700'),
-        file('/usr/local/sbin/claude-clipboard-bridge', (ROOT / 'guest/clipboard-bridge.sh').read_text(), '0700'),
+        file('/usr/local/lib/claude-isolate/clipboard-framing.py',
+             (ROOT / 'guest/clipboard-framing.py').read_text(), '0644'),
+        file('/usr/local/sbin/claude-clipboard-bridge', (ROOT / 'guest/clipboard-bridge.py').read_text(), '0700'),
+        file('/etc/ssh/sshd_config.d/50-claude-isolate.conf', '''PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+ChallengeResponseAuthentication no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTunnel no
+AllowAgentForwarding no
+'''),
         file('/etc/systemd/system/claude-desktop-ready.service', '''[Unit]
 Description=Report isolated graphical session readiness
 After=lightdm.service
@@ -310,8 +319,7 @@ WantedBy=graphical.target
              'Acquire::http::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::https::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n'),
-        file('/etc/fstab', 'claude-shared /home/claude/Shared 9p trans=virtio,version=9p2000.L,rw,_netdev,noauto 0 0\n',
-             '0644')]
+        ]
     data = dict(hostname='isolated-desktop', manage_etc_hosts=True,
                 disable_root=True, ssh_pwauth=False,
                 users=[{'name': 'claude', 'gecos': 'Desktop user',
@@ -327,7 +335,8 @@ WantedBy=graphical.target
                 cloud_final_modules=['scripts_user'],
                 ssh_genkeytypes=['ed25519'],
                 write_files=files,
-                runcmd=[['systemctl', 'unmask', 'ssh.service', 'ssh.socket'],
+                runcmd=[['ssh-keygen', '-A'],
+                        ['systemctl', 'unmask', 'ssh.service', 'ssh.socket'],
                         ['systemctl', 'enable', '--now', 'ssh.socket'],
                         ['install', '-d', '-o', 'claude', '-g', 'claude', '/home/claude/Shared'],
                         ['install', '-d', '-o', 'claude', '-g', 'claude', '/home/claude/.ssh'],
@@ -509,6 +518,12 @@ def prepare(cfg, base, digest):
         image_tool = tool('qemu-img')
         subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(staged_disk)], check=True)
         subprocess.run([image_tool, 'resize', str(staged_disk), '64G'], check=True)
+        # Resizing leaves the backup GPT at the old end of the disk. A slow
+        # emulated boot then misses LABEL=BOOT and LABEL=UEFI and waits in an
+        # emergency shell. Repair the header and fstab before the seed is
+        # published so a retry cannot boot the unmodified disk.
+        from guest_disk import prepare_disk
+        prepare_disk(staged_disk)
         if platform.system() == 'Darwin':
             subprocess.run([tool('hdiutil'), 'makehybrid', '-iso', '-joliet',
                             '-default-volume-name', 'cidata', '-o', str(staged_seed), str(seed_dir)], check=True)
@@ -603,6 +618,8 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                     watcher = None
                     routes = None
                     bridge = None
+                    clipboard = None
+                    shared = None
                     control = None
                     def interrupted(signum, frame):
                         raise KeyboardInterrupt('Launcher interrupted')
@@ -645,9 +662,15 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 from windows.control import Control
                                 control = Control(cfg, proc, restore=restore)
                                 bridge = Gateway(cfg, env)
+                                from windows.clipboard_bridge import ClipboardBridge
+                                from windows.shared_sync import SharedSync
+                                clipboard = ClipboardBridge(cfg)
+                                shared = SharedSync(cfg, Path(cfg['disk']).parent / 'tools' / 'ssh_host_key')
                                 control.on_event = bridge.port_event
                                 control.start()
                                 bridge.start()
+                                clipboard.start()
+                                shared.start()
                                 control.wait_ready()
                             if proc.poll() is None and not offline:
                                 print(json.dumps({'message': 'Linux восстановлен' if control and control.restored
@@ -680,6 +703,10 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                         network_guard.revoke(lease, status_path, 'Среда остановлена')
                         if bridge:
                             bridge.close()
+                        if clipboard:
+                            clipboard.close()
+                        if shared:
+                            shared.close()
                         if control:
                             control.close()
                         stop.set()

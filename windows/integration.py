@@ -419,6 +419,8 @@ def run_guest(core, path, cfg, report, desktop):
                             break
                     except (OSError, ValueError):
                         pass
+                if 'Kernel panic' in boot or 'not syncing' in boot:
+                    raise RuntimeError('Guest kernel panicked')
                 if process.poll() is not None or time.monotonic() >= deadline:
                     raise RuntimeError('Guest did not boot without an external QMP client')
                 time.sleep(.5)
@@ -427,7 +429,9 @@ def run_guest(core, path, cfg, report, desktop):
                 if not control.get('running'):
                     raise RuntimeError('Windows control owner lost the running VM')
             (report / 'qmp.json').write_text(json.dumps(control), encoding='utf-8')
-            boot_timeout = 2100 if desktop else 420
+            # GitHub CI keeps the default. A slow laptop TCG boot can set
+            # CLAUDE_BOOT_TIMEOUT without changing the published job.
+            boot_timeout = int(os.environ.get('CLAUDE_BOOT_TIMEOUT', '2100' if desktop else '420'))
             deadline = time.monotonic() + boot_timeout
             history = report / 'network-events.jsonl'
             history.write_text('', encoding='utf-8')
@@ -436,6 +440,8 @@ def run_guest(core, path, cfg, report, desktop):
             while process.poll() is None:
                 if desktop and not desktop_control_checked:
                     boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
+                    if 'Kernel panic' in boot or 'not syncing' in boot:
+                        raise RuntimeError('Guest kernel panicked')
                     if 'CLAUDE-ISOLATION: desktop-ready' in boot:
                         timings['desktop_ready_seconds'] = round(time.monotonic() - started, 1)
                         control = backend.qmp(cfg, 'query-status')
@@ -514,7 +520,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix='win-boot-', dir=build) as temporary:
         directory = Path(temporary)
         print('Verifying bundled QEMU with no external tools in PATH…', flush=True)
-        executable = ROOT / 'dist/windows/Claude Isolate/runtime/qemu/qemu-system-x86_64.exe'
+        windows_dist = Path(os.environ['CLAUDE_DIST']) if os.environ.get('CLAUDE_DIST') else ROOT / 'dist'
+        executable = windows_dist / 'windows/Claude Isolate/runtime/qemu/qemu-system-x86_64.exe'
         os.environ['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32')
         (report / 'qemu-version.txt').write_bytes(subprocess.check_output([str(executable), '--version']))
         path, cfg = backend.config(directory / 'data')
@@ -523,7 +530,7 @@ def main():
                    cpus=1 if memory_mb == 1024 else 2,
                    resources_mode='minimal' if memory_mb == 1024 else 'economy')
         backend.write_config(path, cfg)
-        core = ROOT / 'dist/windows/Claude Isolate/Claude Isolate Core.exe'
+        core = windows_dist / 'windows/Claude Isolate/Claude Isolate Core.exe'
         # Seed the normal digest-addressed cache from this CI run's artifact.
         # The release URL is not published until all installation tests pass.
         manifest = release_image.metadata(cfg['arch'])

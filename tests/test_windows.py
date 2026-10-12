@@ -403,13 +403,34 @@ class WindowsBackendTests(unittest.TestCase):
             net = cmd[cmd.index('-netdev') + 1]
             self.assertNotIn('guestfwd=', net)
             self.assertIn('restrict=on', net)
+            self.assertIn('hostfwd=tcp:127.0.0.1:2222-:22', net)
+            self.assertEqual(net.count('hostfwd='), 1)
             self.assertIn('virtserialport,chardev=gateway,name=claude.gateway,id=gatewayport', cmd)
+            self.assertIn('virtserialport,chardev=clipboard,name=claude.clipboard,id=clipboardport', cmd)
             self.assertIn('virtio-gpu-pci,edid=off,xres=1920,yres=1200', cmd)
             self.assertIn('usb-tablet', cmd)
             self.assertNotIn('usb-mouse', cmd)
             self.assertEqual(cmd[cmd.index('-display') + 1], 'gtk,gl=off,zoom-to-fit=on')
             self.assertIn('pipe:' + cfg['qmp_pipe'], cmd)
             self.assertFalse(any('tcp:' in c for c in cmd if c.startswith('pipe:')))
+            self.assertNotIn('-virtfs', cmd)
+
+    def test_prepare_mints_ed25519_key_without_ssh_keygen(self):
+        from windows import guest_update
+        with tempfile.TemporaryDirectory() as temporary:
+            data = Path(temporary)
+            _, cfg = backend.config(data)
+            Path(cfg['disk']).write_bytes(b'disk')
+            Path(cfg['seed']).write_bytes(b'seed')
+            with patch.object(guest_update, 'upgrade') as upgrade:
+                backend.prepare(data, cfg)
+            upgrade.assert_called_once()
+            key = data / 'tools' / 'ssh_host_key'
+            self.assertTrue(key.is_file())
+            self.assertTrue(key.with_suffix('.pub').is_file())
+            self.assertIn(b'OPENSSH PRIVATE KEY', key.read_bytes())
+            self.assertIn('ssh-ed25519', cfg['ssh_pubkey'])
+            self.assertTrue(cfg['ssh_pubkey'].endswith('\n'))
 
     def test_accelerator_and_display_cannot_inject_qemu_arguments(self):
         with tempfile.TemporaryDirectory() as temporary:

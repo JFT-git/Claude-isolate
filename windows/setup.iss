@@ -1,3 +1,6 @@
+#ifndef BuildRoot
+#define BuildRoot "..\dist"
+#endif
 [Setup]
 AppId={{F426138A-7ECA-487B-A6CD-47EB31C40462}
 AppName=Claude Isolate
@@ -11,7 +14,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.18362
-OutputDir=..\dist
+OutputDir={#BuildRoot}
 OutputBaseFilename=Claude-isolate-windows-x64-setup
 Compression=lzma2
 SolidCompression=yes
@@ -28,7 +31,7 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\dist\windows\Claude Isolate\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#BuildRoot}\windows\Claude Isolate\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Claude Isolate"; Filename: "{app}\Claude Isolate.exe"

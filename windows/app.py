@@ -29,9 +29,6 @@ def main():
     kernel.CloseHandle.argtypes = [ctypes.c_void_p]
     try:
         ctypes.WinDLL('user32').SetProcessDPIAware()
-        # Import Qt only when actually launching the GUI.
-        from windows import app_qt
-        app, window = app_qt.Application(args.data.resolve())
         name = 'Local\\Claude-Isolate-' + hashlib.sha256(
             os.path.normcase(str(args.data.resolve())).encode()).hexdigest()
         mutex = kernel.CreateMutexW(None, 0, name)
@@ -48,6 +45,8 @@ def main():
                 user.ShowWindow(existing, 9)
                 user.SetForegroundWindow(existing)
             return
+        from windows import app_qt
+        app, window = app_qt.Application(args.data.resolve())
         if args.smoke_test:
             app_qt.QApplication.processEvents()
             args.smoke_test.write_text(app_qt.smoke_report(window), encoding='utf-8')
