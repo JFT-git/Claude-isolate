@@ -18,7 +18,7 @@ def report(**overrides):
 class ReviewedFilterTests(unittest.TestCase):
     def test_exact_review_is_allowed_with_arch_qualifiers(self):
         for cve in ('CVE-2022-25235', 'CVE-2022-25236'):
-            for version in ('157.0~build1', '157.0.1~build1'):
+            for version in ('157.0~build1', '157.0.1~build1', '158.0~build2'):
                 item = report(VulnerabilityID=cve, InstalledVersion=version,
                               PkgIdentifier={'PURL': 'pkg:deb/ubuntu/firefox@' + version + '?arch=arm64&distro=ubuntu-24.04'})
                 self.assertEqual(verify(item, {'Results': []}, date(2026, 10, 6)), 1)

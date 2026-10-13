@@ -8,7 +8,7 @@ import sys
 from urllib.parse import unquote
 
 REVIEW_IDS = {'CVE-2022-25235', 'CVE-2022-25236'}
-REVIEW_VERSIONS = {'157.0~build1', '157.0.1~build1'}
+REVIEW_VERSIONS = {'157.0~build1', '157.0.1~build1', '158.0~build2'}
 EXPIRES = date(2026, 11, 1)
 
 
