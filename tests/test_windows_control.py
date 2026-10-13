@@ -70,6 +70,50 @@ class WindowsControlTests(unittest.TestCase):
                                         'query-status', 'query-status', 'system_powerdown'])
             self.assertFalse(read_state(owner.files['ready'])['ready'])
 
+    def test_stuck_acpi_shutdown_quits_qemu(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cfg = {'disk': str(Path(temporary) / 'disk'), 'qmp_pipe': 'private-test'}
+            process = Mock()
+            process.poll.return_value = None
+            client, server = socket.socketpair()
+            server.settimeout(5)
+            stream = client.makefile('rwb', buffering=0)
+            commands = []
+
+            def qemu():
+                with server.makefile('rwb', buffering=0) as pipe:
+                    pipe.write(b'{"QMP":{"version":{}}}\n')
+                    while True:
+                        raw = pipe.readline()
+                        if not raw:
+                            break
+                        command = json.loads(raw)
+                        commands.append(command['execute'])
+                        if command['execute'] == 'quit':
+                            break
+                        result = {'running': True} if command['execute'] == 'query-status' else {}
+                        pipe.write(json.dumps({'id': command['id'], 'return': result}).encode() + b'\n')
+                server.close()
+
+            peer = threading.Thread(target=qemu, daemon=True)
+            peer.start()
+            owner = Control(cfg, process, reader_factory=lambda pipe: client.makefile('rb', buffering=0),
+                            connector=lambda path: stream)
+            owner.poweroff_grace = 0.05
+            try:
+                owner.start()
+                self.assertTrue(owner.wait_ready(2))
+                self.assertEqual(request(cfg, 'system_powerdown', timeout=2), {})
+                deadline = time.monotonic() + 2
+                while 'quit' not in commands and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertIn('quit', commands)
+            finally:
+                owner.close()
+                client.close()
+                server.close()
+                peer.join(2)
+
     def test_stale_sessions_and_arbitrary_qmp_commands_are_not_forwarded(self):
         with tempfile.TemporaryDirectory() as temporary:
             cfg = {'disk': str(Path(temporary) / 'disk'), 'qmp_pipe': 'private-test'}

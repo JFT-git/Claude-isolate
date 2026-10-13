@@ -71,6 +71,9 @@ class Control:
         self.reader_factory = reader_factory or (lambda pipe: pipe)
         self.connector = connector or NamedPipe
         self.on_event = None
+        # ACPI shutdown can be ignored after a restored TCG guest. Quit QEMU
+        # if it is still running once this grace period ends.
+        self.poweroff_grace = 120
         self.thread = threading.Thread(target=self.run, daemon=True)
 
     def start(self):
@@ -111,6 +114,20 @@ class Control:
             self.error = error
         finally:
             pipe.close()
+
+    def escalate_poweroff(self, pipe):
+        def quit_if_stuck():
+            if self.stop.is_set() or self.process.poll() is not None:
+                return
+            try:
+                data = json.dumps(dict(execute='quit', id=uuid.uuid4().hex)).encode() + b'\n'
+                while data and self.process.poll() is None and not self.stop.is_set():
+                    data = data[pipe.write(data):]
+            except OSError:
+                pass
+        timer = threading.Timer(self.poweroff_grace, quit_if_stuck)
+        timer.daemon = True
+        timer.start()
 
     def start_reader(self, pipe):
         # NamedPipe supports concurrent OVERLAPPED reads and writes.
@@ -183,6 +200,11 @@ class Control:
                             data = data[pipe.write(data):]
                     except OSError:
                         pass
+                continue
+            elif execute == 'system_powerdown':
+                reply['return'] = self.exchange(pipe, 'system_powerdown')
+                write_state(self.files['response'], reply)
+                self.escalate_poweroff(pipe)
                 continue
             elif command['execute'] == 'quit':
                 # Used only to abandon the hidden first-run boot. QEMU exits
