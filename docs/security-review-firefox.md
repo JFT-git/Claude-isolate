@@ -1,6 +1,7 @@
 # Firefox: reviewed Ubuntu advisory mismatch
 
-Reviewed 2026-10-02; `157.0.1~build1` reviewed 2026-10-06.
+Reviewed 2026-10-02; `157.0.1~build1` reviewed 2026-10-06;
+`158.0~build2` reviewed 2026-10-13.
 Expires 2026-11-01; renewal requires a fresh review.
 
 CI run [37016931439](https://github.com/JFT-git/Claude-isolate/actions/runs/37016931439)
@@ -19,6 +20,14 @@ the ESR fixes shipped in 91.7. There is no evidence in these findings of a new
 157.0.1 regression; they match the existing OS-package version mismatch.
 The new review adds that one exact package version, with the same expiry.
 
+CI run [38432075592](https://github.com/JFT-git/Claude-isolate/actions/runs/38432075592)
+resolved Mozilla's signed `158.0~build2` on 2026-10-13 for both architectures.
+The raw reports again contain only these two Firefox findings and propose the
+same Snap transition package. The exact-version rule blocked the unreviewed
+update. The same upstream assessment applies: there is no evidence of a new
+158 regression, only the existing version-comparison mismatch. This review
+adds that one exact package version, with the same expiry.
+
 Mozilla's upstream investigation states that Firefox does not use the affected
 UTF-8 Expat mode for CVE-2022-25235, and its namespace separator avoids the
 condition involved in CVE-2022-25236. The final security assessment says the
@@ -35,8 +44,9 @@ Primary evidence:
 ## Scope and audit trail
 
 `security/trivy-guest-reviewed.yaml` scopes the exceptions to the **exact PURL
-and versions** `pkg:deb/ubuntu/firefox@157.0~build1` and
-`pkg:deb/ubuntu/firefox@157.0.1~build1`, and these two CVEs only.
+and versions** `pkg:deb/ubuntu/firefox@157.0~build1`,
+`pkg:deb/ubuntu/firefox@157.0.1~build1`, and
+`pkg:deb/ubuntu/firefox@158.0~build2`, and these two CVEs only.
 It does not suppress libexpat, another Firefox version, other CVEs, or any other
 package. It is passed only to the guest release-gating scan, not source scans.
 The repositories use pinned signing-key fingerprints and Mozilla APT preferences.

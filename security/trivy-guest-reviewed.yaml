@@ -5,6 +5,7 @@ vulnerabilities:
     purls:
       - "pkg:deb/ubuntu/firefox@157.0~build1"
       - "pkg:deb/ubuntu/firefox@157.0.1~build1"
+      - "pkg:deb/ubuntu/firefox@158.0~build2"
     expired_at: 2026-11-01
     statement: >-
       Mozilla upstream Bug 1754724 comment 14: Firefox does not use Expat in
@@ -15,6 +16,7 @@ vulnerabilities:
     purls:
       - "pkg:deb/ubuntu/firefox@157.0~build1"
       - "pkg:deb/ubuntu/firefox@157.0.1~build1"
+      - "pkg:deb/ubuntu/firefox@158.0~build2"
     expired_at: 2026-11-01
     statement: >-
       Mozilla upstream Bug 1754724 comments 3 and 22: Firefox's namespace
