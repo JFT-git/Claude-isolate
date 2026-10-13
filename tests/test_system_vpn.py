@@ -5,6 +5,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -110,6 +111,62 @@ class SystemVpnTests(unittest.TestCase):
             self.assertTrue(result.stdout.startswith(b'HTTP/1.1 200'))
             self.assertTrue(result.stdout.endswith(b'reply'))
             worker.join(timeout=1)
+
+    def test_idle_public_socket_is_replaced_before_guest_tls(self):
+        # A VPN may close a socket that receives no bytes. The guest's
+        # ClientHello arrives later on a slow emulated boot; it must be sent
+        # on a new connection, not into the closed one.
+        with tempfile.TemporaryDirectory() as directory, socket.socket() as server:
+            server.bind(('127.0.0.1', 0))
+            server.listen(2)
+            server.settimeout(5)
+            port = server.getsockname()[1]
+            received = []
+
+            def serve():
+                with server.accept()[0] as first:
+                    first.settimeout(0.3)
+                    try:
+                        first.recv(64)
+                    except socket.timeout:
+                        pass
+                with server.accept()[0] as second:
+                    second.settimeout(4)
+                    received.append(second.recv(64))
+                    second.sendall(b'reply')
+
+            worker = threading.Thread(target=serve, daemon=True)
+            worker.start()
+            lease = Path(directory) / 'lease.json'
+            network_guard.publish(lease, network_guard.classify({'ip': '8.8.8.8', 'country': 'US'}))
+            header = b'CONNECT claude.ai:443 HTTP/1.1\r\n\r\n'
+            state = {'header': 0, 'waits': 0}
+            guest = bytearray()
+
+            def read(size, timeout=None):
+                if state['header'] < len(header):
+                    state['header'] += 1
+                    return header[state['header'] - 1:state['header']]
+                state['waits'] += 1
+                if state['waits'] < 3:
+                    time.sleep(0.4)
+                    raise TimeoutError
+                if state['waits'] == 3:
+                    return b'guest-tls'
+                return b''
+
+            def write(data):
+                guest.extend(data)
+
+            def connect(host, connect_port, timeout=3):
+                return socket.create_connection(('127.0.0.1', port), timeout)
+
+            with patch.object(environment, 'open_public', side_effect=connect):
+                environment.relay_stream(read, write, None, 'system', 'public', lease)
+            self.assertEqual(received, [b'guest-tls'])
+            self.assertTrue(bytes(guest).startswith(b'HTTP/1.1 200'))
+            self.assertTrue(bytes(guest).endswith(b'reply'))
+            worker.join(timeout=2)
 
     def test_probe_rate_limit_reports_retry_without_accepting_location(self):
         conn = Mock()

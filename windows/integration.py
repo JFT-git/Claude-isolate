@@ -247,7 +247,8 @@ while True:
 
 
 def install_guest_update(directory, data, report):
-    installer = ROOT / 'dist/Claude-isolate-windows-x64-setup.exe'
+    dist = Path(os.environ['CLAUDE_DIST']) if os.environ.get('CLAUDE_DIST') else ROOT / 'dist'
+    installer = dist / 'Claude-isolate-windows-x64-setup.exe'
     target = directory / 'Installer updated app'
     path = data / 'environment.json'
     cfg = environment.load_config(path)
@@ -327,6 +328,7 @@ def run_fast_start(core, path, cfg, report):
         wait_for(lambda: 'CLAUDE-ISOLATION: desktop-ready' in boot_text(cfg)
                  and network_after(cfg) is not None, process, 1800, 'Cold boot before saving')
         shutil.copy2(cfg['boot_log'], report / 'boot-3.boot.log')
+        stale_net = network_after(cfg)
         started = time.monotonic()
         saved = subprocess.run([str(core), 'suspend', '--data', str(path.parent)], capture_output=True,
                                timeout=900, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -358,7 +360,9 @@ def run_fast_start(core, path, cfg, report):
         measured['restore_seconds'] = round(time.monotonic() - started, 1)
         if state.exists(cfg):
             raise RuntimeError('A restored guest kept its single-use saved state')
-        wait_for(lambda: network_after(cfg) is not None, process, 300, 'Gateway HTTPS after restore')
+        # The boot log still holds the pre-suspend NET-OK until the guest prints a new one.
+        wait_for(lambda: network_after(cfg) not in (None, stale_net), process, 300,
+                 'Gateway HTTPS after restore')
         measured['network_after_restore_seconds'] = round(time.monotonic() - started, 1)
         guest_time = network_after(cfg)
         measured['clock_skew_seconds'] = round(time.time() - guest_time, 1)

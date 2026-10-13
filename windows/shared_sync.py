@@ -27,26 +27,36 @@ class SharedSync:
             self.thread.join(timeout=5)
 
     def run(self):
-        try:
-            client = self.connect()
-            if not client:
-                return
-            sftp = client.open_sftp()
+        # The guest may boot long after the sync thread starts (slow hosts, restore
+        # from a snapshot), and the SSH session can drop: keep reconnecting until closed.
+        reported = ''
+        while not self.stop.is_set():
+            client = None
             try:
-                self.ensure_remote(sftp)
-                while not self.stop.is_set():
-                    self.sync_once(sftp)
-                    self.stop.wait(2.0)
+                client = self.connect()
+                if not client:
+                    continue
+                sftp = client.open_sftp()
+                try:
+                    self.ensure_remote(sftp)
+                    while not self.stop.is_set():
+                        self.sync_once(sftp)
+                        self.stop.wait(2.0)
+                finally:
+                    sftp.close()
+            except Exception as error:
+                message = 'Windows shared folder sync: ' + str(error)
+                if message != reported:
+                    print(message, file=sys.stderr, flush=True)
+                    reported = message
+                self.stop.wait(5.0)
             finally:
-                sftp.close()
-                client.close()
-        except Exception as error:
-            print('Windows shared folder sync: ' + str(error), file=sys.stderr, flush=True)
+                if client:
+                    client.close()
 
     def connect(self):
         import paramiko
-        deadline = time.monotonic() + 600
-        while not self.stop.is_set() and time.monotonic() < deadline:
+        while not self.stop.is_set():
             try:
                 with socket.create_connection(('127.0.0.1', 2222), timeout=2):
                     pass
@@ -61,7 +71,11 @@ class SharedSync:
                                allow_agent=False, timeout=10, banner_timeout=60,
                                auth_timeout=30)
                 return client
-            except (paramiko.SSHException, OSError):
+            except (paramiko.SSHException, OSError) as error:
+                message = 'Windows shared folder sync connect: ' + type(error).__name__ + ': ' + str(error)
+                if 'banner' not in message and message != getattr(self, 'last_connect_error', ''):
+                    print(message, file=sys.stderr, flush=True)
+                    self.last_connect_error = message
                 self.stop.wait(2)
         return None
 
@@ -148,6 +162,7 @@ class _LocalhostKeys:
     """Remember the host key only for the slirp forward on 127.0.0.1."""
 
     def missing_host_key(self, client, hostname, key):
-        if hostname not in ('127.0.0.1', 'localhost'):
+        # paramiko names a non-default port host '[127.0.0.1]:2222'.
+        if hostname not in ('127.0.0.1', 'localhost', '[127.0.0.1]:2222', '[localhost]:2222'):
             raise OSError('Refusing SSH host ' + str(hostname))
         client.get_host_keys().add(hostname, key.get_name(), key)

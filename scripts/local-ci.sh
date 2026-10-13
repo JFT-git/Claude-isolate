@@ -7,7 +7,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LAPTOP_HOST="${LAPTOP_HOST:-192.168.60.107}"
-REMOTE="Vladislav Gubin@${LAPTOP_HOST}"
+LAPTOP_USER="${LAPTOP_USER:-Vladislav Gubin}"
+REMOTE="${LAPTOP_USER}@${LAPTOP_HOST}"
 SSH=(ssh -o BatchMode=yes -o ConnectTimeout=25 -o ConnectionAttempts=3
   -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o TCPKeepAlive=yes
   -o NumberOfPasswordPrompts=0 -o StrictHostKeyChecking=accept-new)

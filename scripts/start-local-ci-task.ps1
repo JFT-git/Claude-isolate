@@ -16,7 +16,7 @@ Remove-Item -LiteralPath $Log -ErrorAction SilentlyContinue
 $arg = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`""
 if ($GitCommit) { $arg += " -GitCommit $GitCommit" }
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg -WorkingDirectory $Root
-$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes(10))
+$trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddDays(300))
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -ExecutionTimeLimit (New-TimeSpan -Hours 8) -MultipleInstances IgnoreNew

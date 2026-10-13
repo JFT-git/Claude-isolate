@@ -384,6 +384,13 @@ if (-not (Test-Path -LiteralPath $app) -or -not (Test-Path -LiteralPath $core)) 
     Exit-Summary
 }
 Write-Result 'PASS' 'install' $installDir
+# Prepare reads the guest bridge from the installed bundle. Use the repo copy
+# so a bridge fix can be tested before the installer is rebuilt.
+$bundledGuest = Join-Path $installDir '_internal\guest\clipboard-bridge.py'
+$sourceGuest = Join-Path $Root 'guest\clipboard-bridge.py'
+if ((Test-Path -LiteralPath $sourceGuest) -and (Test-Path -LiteralPath $bundledGuest)) {
+    Copy-Item -LiteralPath $sourceGuest -Destination $bundledGuest -Force
+}
 
 $manifestFile = Join-Path $Root 'guest-image-x86_64.json'
 $artifact = $null
@@ -482,7 +489,15 @@ if (-not (Test-Path -LiteralPath $disk)) {
             }
         }
         if (-not $sshDetail) {
-            $probe = Invoke-GuestSsh $ssh $key $knownHosts 'echo claude-isolate-e2e-ok' 30
+            # QEMU opens the host forward long before the guest sshd answers (TCG boot
+            # takes minutes), so keep probing until the boot timeout instead of once.
+            $probeDeadline = (Get-Date).AddSeconds($BootTimeoutSec)
+            do {
+                $probe = Invoke-GuestSsh $ssh $key $knownHosts 'echo claude-isolate-e2e-ok' 30
+                if ($probe.Code -eq 0 -and (Test-OutputLine $probe.Text 'claude-isolate-e2e-ok')) { break }
+                if ($guest -and $guest.HasExited) { break }
+                Start-Sleep -Seconds 10
+            } while ((Get-Date) -lt $probeDeadline)
             if ($probe.Code -eq 0 -and (Test-OutputLine $probe.Text 'claude-isolate-e2e-ok')) {
                 $sshReady = $true
                 Write-Result 'PASS' 'ssh' "ssh -p 2222 -i $key claude@127.0.0.1"
@@ -500,8 +515,10 @@ $startText = ''
 $startLogPath = Join-Path $Data 'e2e-start.log'
 if (Test-Path -LiteralPath $startLogPath) { $startText = [IO.File]::ReadAllText($startLogPath) }
 if (-not $fastSnapshot) {
-    Write-Result 'FAIL' 'fast-start' 'prepare did not leave a claude-fast-start snapshot'
-} elseif ($startText -match 'Быстрый запуск не удался') {
+    # prepare never saves a snapshot; only 'suspend' does. The save/restore cycle and the
+    # clock correction after restore are verified by windows/integration.py (run_fast_start).
+    Write-Result 'SKIP' 'fast-start' 'no snapshot yet (created by suspend); save/restore is covered by windows/integration.py'
+} elseif ($startText -match ('\u0411\u044b\u0441\u0442\u0440\u044b\u0439 \u0437\u0430\u043f\u0443\u0441\u043a \u043d\u0435 \u0443\u0434\u0430\u043b\u0441\u044f')) {
     Write-Result 'FAIL' 'fast-start' 'restore fell back to a full boot'
 } elseif ($sshReady) {
     Write-Result 'PASS' 'fast-start' 'snapshot restored and SSH answered on 127.0.0.1:2222'
@@ -559,10 +576,10 @@ function Test-ClipboardBridge {
     $deadline = (Get-Date).AddSeconds(60)
     $pipeUp = $false
     while ((Get-Date) -lt $deadline) {
-        if (Test-Path -LiteralPath $clipPipe) { $pipeUp = $true; break }
+        if ([IO.Directory]::GetFiles('\\.\pipe\') -contains $clipPipe) { $pipeUp = $true; break }
         Start-Sleep -Seconds 2
     }
-    $remote = 'test -e /dev/virtio-ports/claude-clipboard && systemctl is-active claude-clipboard-bridge.service'
+    $remote = 'test -e /dev/virtio-ports/claude.clipboard && systemctl is-active claude-clipboard-bridge.service'
     $guestUp = Invoke-GuestSsh $ssh $key $knownHosts $remote 20
     if (-not $pipeUp -or $guestUp.Code -ne 0) {
         return "bridge is not up (pipe $clipPipe present=$pipeUp; guest port/service exit $($guestUp.Code))"
@@ -576,9 +593,13 @@ function Test-ClipboardBridge {
         if (-not (Wait-GuestText $ssh $key $knownHosts $readGuest $tokenOut $ClipboardTimeoutSec)) {
             return 'text host to guest did not arrive through the clipboard bridge'
         }
-        $writeGuest = "printf '%s' '$tokenIn' | timeout 5 env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard"
+        # xclip stays in the foreground while it owns the selection. `timeout`
+        # then returns 124 and drops the paste. Leave that process running.
+        $writeGuest = "printf '%s' '$tokenIn' | nohup env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard >/dev/null 2>&1 & sleep 1; timeout 5 env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard -o"
         $wrote = Invoke-GuestSsh $ssh $key $knownHosts $writeGuest 20
-        if ($wrote.Code -ne 0) { return 'guest xclip could not set text' }
+        if ($wrote.Code -ne 0 -or -not (Test-OutputLine $wrote.Text $tokenIn)) {
+            return ("guest xclip could not set text ({0}) {1}" -f $wrote.Code, ([string]$wrote.Text).Trim())
+        }
         $got = ''
         $deadline = (Get-Date).AddSeconds($ClipboardTimeoutSec)
         while ((Get-Date) -lt $deadline) {
@@ -586,7 +607,7 @@ function Test-ClipboardBridge {
             if ($got.Trim() -eq $tokenIn) { break }
             Start-Sleep -Seconds 1
         }
-        if ($got.Trim() -ne $tokenIn) { return 'text guest to host did not arrive through the clipboard bridge' }
+        if ($got.Trim() -ne $tokenIn) { return ("text guest to host did not arrive through the clipboard bridge. host saw [{0}]" -f $got.Trim()) }
         $png = [Convert]::FromBase64String($PngBase64)
         [ClipE2E]::SetPng($png)
         $readPng = "timeout 5 env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard -t image/png -o | base64 -w 0"
@@ -606,9 +627,11 @@ function Test-ClipboardBridge {
         }
         if (-not $hostToGuest) { return 'PNG host to guest did not match' }
         $b64 = [Convert]::ToBase64String($png)
-        $writePng = "printf '%s' '$b64' | base64 -d | timeout 5 env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard -t image/png"
+        $writePng = "printf '%s' '$b64' | base64 -d | nohup env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard -t image/png >/dev/null 2>&1 & sleep 1; timeout 5 env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xclip -selection clipboard -t image/png -o | base64 -w 0"
         $sent = Invoke-GuestSsh $ssh $key $knownHosts $writePng 20
-        if ($sent.Code -ne 0) { return 'guest xclip could not set a PNG' }
+        if ($sent.Code -ne 0 -or -not (Test-OutputLine $sent.Text $b64)) {
+            return ("guest xclip could not set a PNG ({0}) {1}" -f $sent.Code, ([string]$sent.Text).Trim())
+        }
         $guestToHost = $false
         $deadline = (Get-Date).AddSeconds($ClipboardTimeoutSec)
         while ((Get-Date) -lt $deadline) {

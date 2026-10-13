@@ -18,8 +18,12 @@ def answer(ip, port=443):
 
 
 class FakeDnsTests(unittest.TestCase):
+    def setUp(self):
+        transport._doh_cache.clear()
+
     def test_synthetic_dns_replaced_without_connecting_to_fake_address(self):
         for synthetic in ('198.18.0.1', '198.19.255.254'):
+            transport._doh_cache.clear()
             with self.subTest(ip=synthetic), \
                     patch.object(socket, 'getaddrinfo', return_value=[answer(synthetic)]) as dns, \
                     patch.object(transport, '_doh_addresses', return_value=[answer('8.8.8.8')]) as doh, \
@@ -28,6 +32,23 @@ class FakeDnsTests(unittest.TestCase):
                 dns.assert_called_once()
                 doh.assert_called_once()
                 create.return_value.connect.assert_called_once_with(('8.8.8.8', 443))
+
+    def test_slow_doh_gets_its_own_budget_and_one_retry(self):
+        calls = []
+
+        def doh(host, port, deadline):
+            calls.append(deadline - time.monotonic())
+            if len(calls) == 1:
+                raise OSError('The read operation timed out')
+            return [answer('8.8.8.8')]
+
+        with patch.object(socket, 'getaddrinfo', return_value=[answer('198.18.2.9')]), \
+                patch.object(transport, '_doh_addresses', side_effect=doh), \
+                patch.object(socket, 'socket', return_value=Mock()) as create:
+            transport.open_public('www.cloudflare.com', 443, timeout=3)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(budget > 4 for budget in calls))
+        create.return_value.connect.assert_called_once_with(('8.8.8.8', 443))
 
     def test_fake_literal_local_names_mixed_and_other_private_answers_fail_closed(self):
         cases = [('198.18.0.1', ['198.18.0.1']), ('router.local', ['198.18.0.1']),

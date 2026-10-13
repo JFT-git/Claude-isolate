@@ -79,6 +79,11 @@ Step 'Python 3.12' {
         ) -Wait -PassThru
         if ($proc.ExitCode -ne 0) { throw "Python installer exit $($proc.ExitCode)" }
     }
+    if (-not (Test-Path $python)) {
+        # An existing per-user 3.12 install makes the installer ignore TargetDir.
+        $fallback = Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'
+        if (Test-Path $fallback) { $python = $fallback }
+    }
     if (-not (Test-Path $python)) { throw "Python not found at $python" }
     $script:ResolvedPython = $python
     $env:PATH = "$(Split-Path $python);$(Split-Path $python)\Scripts;" + $env:PATH
@@ -188,7 +193,27 @@ Step 'Windows integration' {
     $free = Free-Memory
     $memory = if ($free -ge 4200) { 2048 } else { 1024 }
     Write-Host "Integration guest memory: $memory MB"
-    & $Python windows/integration.py --desktop --memory-mb $memory
+    # Tee everything (stdout+stderr) into the polled transcript.
+    $ErrorActionPreference = 'Continue'
+    & $Python windows/integration.py --desktop --memory-mb $memory 2>&1 |
+        ForEach-Object { Write-Host ([string]$_) }
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        foreach ($name in 'boot-1','boot-2') {
+            $dir = Join-Path 'reports\windows' $name
+            foreach ($file in 'timings.json','network-state.json') {
+                $path = Join-Path $dir $file
+                if (Test-Path -LiteralPath $path) { Write-Host "--- $path"; Get-Content -LiteralPath $path }
+            }
+            $boot = Join-Path $dir 'boot.log'
+            if (Test-Path -LiteralPath $boot) {
+                Write-Host "--- $boot (WINDOWS-INTEGRATION/ISOLATION lines)"
+                Select-String -LiteralPath $boot -Pattern 'WINDOWS-INTEGRATION|CLAUDE-ISOLATION|Traceback|Error' |
+                    Select-Object -Last 40 | ForEach-Object { Write-Host $_.Line }
+            }
+        }
+    }
+    $global:LASTEXITCODE = $code
 }
 
 Write-Host ''

@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 import time
 from urllib.parse import urlencode
 from tls_trust import client_context
@@ -13,6 +14,13 @@ from tls_trust import client_context
 FAKE_IP_RANGE = ipaddress.ip_network('198.18.0.0/15')
 DOH_HOST = 'cloudflare-dns.com'
 DOH_BOOTSTRAP = ('1.1.1.1', '1.0.0.1')
+# A router/VPN with fake-IP DNS can take 3 s or more for one DoH answer; this
+# resolver budget is separate from the 3 s connect budget of the caller.
+DOH_ATTEMPT_SECONDS = 6
+DOH_ATTEMPTS = 2
+DOH_CACHE_SECONDS = 120
+_doh_cache = {}
+_doh_lock = threading.Lock()
 
 
 def public_address(value):
@@ -114,13 +122,39 @@ def open_public(host, port, timeout=3):
     # IPv4 only, consistently for both guest traffic and the IP check.
     # Connect to the exact validated address; never allow local DNS rebinding.
     deadline = time.monotonic() + timeout
-    addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+    for attempt in range(3):
+        try:
+            addresses = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+            break
+        except socket.gaierror:
+            # A home router's resolver drops an occasional query; retry.
+            if attempt == 2:
+                raise
+            time.sleep(0.5)
     if not addresses:
         raise OSError(f'DNS не вернул адрес для {host}')
     if any(not public_address(a[4][0]) for a in addresses):
         if (_public_hostname(host)
                 and all(ipaddress.ip_address(a[4][0]) in FAKE_IP_RANGE for a in addresses)):
-            addresses = _doh_addresses(host, port, deadline)
+            key = (host.lower(), port)
+            with _doh_lock:
+                cached = _doh_cache.get(key)
+            if cached and cached[0] > time.monotonic():
+                addresses = cached[1]
+            else:
+                error = None
+                for _ in range(DOH_ATTEMPTS):
+                    try:
+                        addresses = _doh_addresses(host, port, time.monotonic() + DOH_ATTEMPT_SECONDS)
+                        break
+                    except OSError as failure:
+                        error = failure
+                else:
+                    raise error
+                with _doh_lock:
+                    _doh_cache[key] = (time.monotonic() + DOH_CACHE_SECONDS, addresses)
+            # The caller's budget covers the connection, not the slow resolver.
+            deadline = time.monotonic() + timeout
         else:
             rejected = ', '.join(dict.fromkeys(a[4][0] for a in addresses))[:256]
             raise OSError(f'DNS для {host} вернул локальный или непубличный адрес '

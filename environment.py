@@ -445,24 +445,37 @@ def relay_stream(read, write, port, mode, web_access, lease):
         if not network_guard.permitted(lease):
             return
         is_tunnel = header.startswith(b'CONNECT ')
-        if mode == 'system' and is_tunnel:
+        system_tunnel = mode == 'system' and is_tunnel
+        active = s
+        early = b''
+        if system_tunnel:
             # We relay encrypted bytes; TLS remains between guest and server.
+            # A slow emulated guest does not emit the ClientHello until it has
+            # this reply. Opening the public socket and then waiting leaves it
+            # idle, and a VPN closes that idle socket. The guest only sees a
+            # TLS EOF. Wait for the first guest bytes and, if the socket died,
+            # open a new one and send those bytes at once.
             write(b'HTTP/1.1 200 Connection established\r\n\r\n')
+            active, early = prime_system_tunnel(read, s, lease, destination.hostname,
+                                                destination.port or 80)
+            if active is None:
+                return
         elif mode == 'system':
             path = destination.path or '/'
             if destination.query:
                 path += '?' + destination.query
             method = first_line.decode('ascii').split(' ')[0]
             s.sendall(f'{method} {path} HTTP/1.1\r\n'.encode('ascii') + forwarded_headers)
+            s.settimeout(None)
         else:
             s.sendall(header)
-        s.settimeout(None)
+            s.settimeout(None)
         finished = threading.Event()
         def watch_lease():
             while not finished.wait(network_guard.RELAY_INTERVAL):
                 if not network_guard.permitted(lease):
                     try:
-                        s.shutdown(socket.SHUT_RDWR)
+                        active.shutdown(socket.SHUT_RDWR)
                     except OSError:
                         pass
                     return
@@ -473,20 +486,86 @@ def relay_stream(read, write, port, mode, web_access, lease):
                     chunk = read(65536)
                     if not chunk or not network_guard.permitted(lease):
                         break
-                    s.sendall(chunk)
-                s.shutdown(socket.SHUT_WR)
+                    active.sendall(chunk)
+                active.shutdown(socket.SHUT_WR)
             except OSError:
                 pass
-        if header.startswith(b'CONNECT '):
+        if is_tunnel:
             threading.Thread(target=upload, daemon=True).start()
         try:
+            if early:
+                write(early)
             while True:
-                chunk = s.recv(65536)
+                chunk = active.recv(65536)
                 if not chunk or not network_guard.permitted(lease):
                     break
                 write(chunk)
         finally:
             finished.set()
+            if active is not s:
+                active.close()
+
+
+def prime_system_tunnel(read, sock, lease, hostname, port):
+    """Return a live public socket after the guest's first tunnel bytes.
+
+    The returned socket has already been given those bytes. Bytes the server
+    sent before them are returned as the second value and must be written to
+    the guest. (None, b'') means the tunnel should stop.
+    """
+    original = sock
+    sock.setblocking(False)
+    early = bytearray()
+    deadline = time.monotonic() + 60
+    payload = b''
+    while time.monotonic() < deadline:
+        if not network_guard.permitted(lease):
+            return None, b''
+        if sock is not None:
+            try:
+                incoming = sock.recv(65536)
+            except BlockingIOError:
+                incoming = None
+            except OSError:
+                sock.close()
+                sock = None
+                incoming = None
+            if sock is not None and incoming == b'':
+                sock.close()
+                sock = None
+            elif incoming:
+                early.extend(incoming)
+        try:
+            payload = read(65536, 0.5)
+        except TimeoutError:
+            continue
+        break
+    else:
+        return None, b''
+    if not payload or not network_guard.permitted(lease):
+        if sock is not None and sock is not original:
+            sock.close()
+        return None, b''
+    if sock is None:
+        try:
+            sock = open_public(hostname, port, timeout=3)
+        except OSError as error:
+            print(f'Gateway connection failed: {error}', file=sys.stderr)
+            return None, b''
+        early.clear()
+        print('Gateway reconnected after the public socket closed before guest TLS', file=sys.stderr)
+    try:
+        sock.settimeout(None)
+        sock.sendall(payload)
+    except OSError as error:
+        print(f'Gateway connection failed: {error}', file=sys.stderr)
+        if sock is not original:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        return None, b''
+    return sock, bytes(early)
 
 
 def prepare(cfg, base, digest):
@@ -697,6 +776,8 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 proc.kill()
                                 proc.wait()
                             if restore and not (control and control.restored) and not isinstance(error, KeyboardInterrupt):
+                                print('Restore failed: ' + type(error).__name__ + ': ' + str(error),
+                                      file=sys.stderr, flush=True)
                                 raise RestoreFailed('Сохранённое состояние Linux не загрузилось') from error
                             raise
                     finally:
