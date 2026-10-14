@@ -1,4 +1,5 @@
 """QEMU on Windows must not receive a non-ASCII file path."""
+import codecs
 import os
 from pathlib import Path
 import tempfile
@@ -125,6 +126,24 @@ class QemuAsciiPathTests(unittest.TestCase):
             self.assertIn('Could not open desktop.qcow2', message)
             self.assertIn('Системе не удается найти указанный путь', message)
             self.assertNotIn('не подготовил канал управления вовремя', message)
+
+    def test_cp1251_qemu_log_is_not_read_as_a_western_ansi_page(self):
+        from windows.control import decode_qemu_output
+        data = 'Could not open desktop.qcow2: Системе не удается найти указанный путь\n'.encode('cp1251')
+
+        def search(name):
+            if name == 'mbcs':
+                return codecs.lookup('cp1252')
+            return None
+
+        codecs.register(search)
+        try:
+            with patch('windows.control.os.name', 'nt'):
+                text = decode_qemu_output(data)
+        finally:
+            codecs.unregister(search)
+        self.assertIn('Системе не удается найти указанный путь', text)
+        self.assertNotIn('Ñ', text)
 
     def test_running_qemu_without_output_still_reports_the_timeout(self):
         process = Mock()

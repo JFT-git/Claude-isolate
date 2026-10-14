@@ -22,14 +22,14 @@ from windows.pipe import NamedPipe
 COMMANDS = ('query-status', 'query-mice', 'system_powerdown', 'suspend')
 
 
-def qemu_output_text(path):
-    """QEMU writes its ANSI-code-page error to stderr. Show that text, not only a timeout."""
-    if not path:
-        return ''
-    try:
-        data = Path(path).read_bytes()
-    except OSError:
-        return ''
+def decode_qemu_output(data):
+    """Decode QEMU stderr.
+
+    UTF-8 is preferred. Otherwise try the Windows ANSI code page, which is how
+    QEMU prints a localized "path not found". cp1251 is the Russian ANSI page;
+    it is also tried explicitly so a log captured there still decodes when the
+    process reading it is not running under that page.
+    """
     if not data:
         return ''
     encodings = ['utf-8']
@@ -38,10 +38,37 @@ def qemu_output_text(path):
     encodings.append('cp1251')
     for encoding in encodings:
         try:
-            return data.decode(encoding).strip()
+            text = data.decode(encoding)
         except UnicodeDecodeError:
             continue
+        # cp1252 (and most mbcs pages) can decode every byte, so a Russian
+        # message captured as cp1251 would look like Latin-1 mojibake. Prefer
+        # the cp1251 reading when that is what the bytes actually are.
+        if encoding == 'mbcs':
+            try:
+                as_cp1251 = data.decode('cp1251')
+            except UnicodeDecodeError:
+                as_cp1251 = None
+            if as_cp1251 and as_cp1251 != text and _looks_like_mojibake(text) and not _looks_like_mojibake(as_cp1251):
+                return as_cp1251.strip()
+        return text.strip()
     return data.decode('utf-8', errors='replace').strip()
+
+
+def _looks_like_mojibake(text):
+    # "Системе" encoded as cp1251 and read as cp1252 starts with these letters.
+    return 'Ñ' in text or 'Ã' in text or 'Ð' in text
+
+
+def qemu_output_text(path):
+    """QEMU writes its ANSI-code-page error to stderr. Show that text, not only a timeout."""
+    if not path:
+        return ''
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ''
+    return decode_qemu_output(data)
 
 
 def qemu_exit_message(code, path):
