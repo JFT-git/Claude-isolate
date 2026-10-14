@@ -1,9 +1,12 @@
 """Shared folder, localhost SSH and clipboard for macOS and Linux hosts.
 
 The guest side (sshd, /home/claude/Shared, virtio clipboard) is the same as on
-Windows. These hosts reach it over localhost:2222 and a Unix socket chardev.
+Windows. These hosts reach it over the localhost SSH port (2222 unless it is
+taken) and a Unix socket chardev.
 """
 import hashlib
+import select
+import shutil
 import socket
 import subprocess
 import sys
@@ -92,6 +95,70 @@ pb.setDataForType(raw, 'public.png');
 '''
 
 
+_MAC_WATCH = r'''
+ObjC.import('AppKit');
+var pb = $.NSPasteboard.generalPasteboard;
+var out = $.NSFileHandle.fileHandleWithStandardOutput;
+var last = -1;
+while (true) {
+  var count = pb.changeCount;
+  if (count !== last) {
+    last = count;
+    out.writeData($(String(count) + '\n').dataUsingEncoding($.NSUTF8StringEncoding));
+  }
+  delay(0.3);
+}
+'''
+
+
+class ClipboardChanges:
+    """Tell when the host clipboard may have changed.
+
+    Reading an image on macOS needs osascript, which takes a noticeable part
+    of a CPU core to start. One long-lived watcher reports the pasteboard's
+    change count instead, so the clipboard is read only after a copy.
+    """
+
+    def __init__(self):
+        self.process = None
+        self.pending = True
+        if sys.platform == 'darwin':
+            try:
+                self.process = subprocess.Popen(['osascript', '-l', 'JavaScript', '-e', _MAC_WATCH],
+                                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            except OSError:
+                self.process = None
+
+    def changed(self):
+        if self.process is None:
+            return True  # Linux: xclip is cheap to run; or no watcher available.
+        if self.process.poll() is not None:
+            self.process = None
+            return True
+        while select.select([self.process.stdout], [], [], 0)[0]:
+            if not self.process.stdout.readline():
+                break
+            self.pending = True
+        changed, self.pending = self.pending, False
+        return changed
+
+    def close(self):
+        if self.process is not None:
+            self.process.kill()
+            self.process.wait()
+            self.process.stdout.close()
+            self.process = None
+
+
+def clipboard_tool_missing():
+    """Linux needs xclip for the clipboard; say so once instead of failing silently."""
+    if sys.platform == 'darwin' or shutil.which('xclip'):
+        return False
+    print('Общий буфер обмена выключен: установите xclip (например, sudo apt install xclip) '
+          'и перезапустите среду.', file=sys.stderr, flush=True)
+    return True
+
+
 class UnixClipboard:
     """Bidirectional TEXT/PNG bridge over the QEMU clipboard Unix socket."""
 
@@ -112,6 +179,15 @@ class UnixClipboard:
             self.thread.join(timeout=5)
 
     def run(self):
+        if clipboard_tool_missing():
+            return
+        changes = ClipboardChanges()
+        try:
+            self.serve(changes)
+        finally:
+            changes.close()
+
+    def serve(self, changes):
         sock = None
         deadline = time.monotonic() + 120
         while not self.stop.is_set():
@@ -151,6 +227,8 @@ class UnixClipboard:
                 except Exception as error:
                     print('Clipboard bridge: ' + str(error), file=sys.stderr, flush=True)
                 try:
+                    if not changes.changed():
+                        continue
                     text = get_text()
                     if text:
                         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()

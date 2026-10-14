@@ -7,21 +7,34 @@ import plistlib
 import shutil
 import subprocess
 
+ROOT = Path(__file__).resolve().parents[1]
+# Everything the macOS code path imports, including lazily: guest_disk while
+# preparing a disk, host_access and the shared windows/ modules (SSH key,
+# shared folder sync, clipboard framing) while starting. A missing module
+# made the app fail at once with "No module named ...".
+RUNTIME = ['environment.py', 'network_guard.py', 'network_transport.py', 'tls_trust.py', 'route_guard.py',
+           'ubuntu_image.py', 'release_image.py', 'session_lock.py', 'guest_disk.py', 'host_access.py',
+           'environment.example.json', 'guest', 'macos', 'windows']
+
+
+def copy_runtime(runtime, root=ROOT):
+    runtime.mkdir(parents=True, exist_ok=True)
+    for name in RUNTIME:
+        source, target = root / name, runtime / name
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True,
+                            ignore=shutil.ignore_patterns('__pycache__', '*.spec', '*.iss', 'version.txt'))
+        else:
+            shutil.copy2(source, target)
+
 
 def build(output, arch, analysis_only=False):
-    root = Path(__file__).resolve().parents[1]
+    root = ROOT
     app = output / 'Claude Environment.app'
     contents = app / 'Contents'
     runtime = contents / 'Resources/runtime'
     (contents / 'MacOS').mkdir(parents=True, exist_ok=True)
-    runtime.mkdir(parents=True, exist_ok=True)
-    for name in ['environment.py', 'network_guard.py', 'network_transport.py', 'tls_trust.py', 'route_guard.py', 'ubuntu_image.py', 'release_image.py', 'session_lock.py',
-                 'environment.example.json', 'guest', 'macos']:
-        source, target = root / name, runtime / name
-        if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True, ignore=shutil.ignore_patterns('__pycache__'))
-        else:
-            shutil.copy2(source, target)
+    copy_runtime(runtime, root)
     for manifest in root.glob('guest-image-*.json'):
         shutil.copy2(manifest, runtime / manifest.name)
     if not analysis_only and not list(runtime.glob('guest-image-*.json')):
@@ -29,7 +42,7 @@ def build(output, arch, analysis_only=False):
     (contents / 'Info.plist').write_bytes(plistlib.dumps(dict(
         CFBundleExecutable='ClaudeEnvironment', CFBundleIdentifier='local.claude.environment',
         CFBundleName='Claude Environment', CFBundlePackageType='APPL',
-        CFBundleShortVersionString='1.0.6', CFBundleVersion='27',
+        CFBundleShortVersionString='1.0.7', CFBundleVersion='28',
         LSMinimumSystemVersion='14.0', NSHighResolutionCapable=True)))
     cache = root / 'build/modulecache' / arch
     cache.mkdir(parents=True, exist_ok=True)

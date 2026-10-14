@@ -55,7 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         title.font = .systemFont(ofSize: 25, weight: .semibold)
         stack.addArrangedSubview(title)
         let intro = NSTextField(wrappingLabelWithString:
-            "Claude Desktop работает в отдельной Linux-системе. Папки, буфер обмена, камера и микрофон Mac не передаются.")
+            "Claude Desktop работает в отдельной Linux-системе. Файлы, камера, микрофон и USB Mac ей недоступны. Общие с Mac только буфер обмена и папка shared в папке среды.")
         intro.textColor = .secondaryLabelColor
         stack.addArrangedSubview(intro)
         status.font = .systemFont(ofSize: 16, weight: .medium)
