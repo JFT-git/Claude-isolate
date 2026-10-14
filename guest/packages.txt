@@ -25,4 +25,6 @@ claude-desktop
 firefox
 
 openssh-client
+openssh-server
+openssh-sftp-server
 xclip

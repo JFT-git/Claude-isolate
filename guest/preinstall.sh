@@ -8,6 +8,9 @@ export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 # files. Remove remote indexes instead: only these local archives can satisfy
 # dependencies, and virt-customize additionally runs with --no-network.
 rm -rf /var/lib/apt/lists/*
+# packages.txt names openssh-server with openssh-client: the server depends on
+# the client's exact version, and without the matching server archive an
+# updated client would make APT remove the image's server (no SSH, no SFTP).
 apt-get install -y --no-install-recommends /tmp/claude-debs/*.deb
 # Keep the verified repository keys and Firefox pin for subsequent updates.
 cp -r /tmp/claude-debs/repository-config/. /

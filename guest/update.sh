@@ -13,7 +13,7 @@ if [ "${1:-}" != '--installed' ]; then
     apt-get -o DPkg::Lock::Timeout=180 update
     apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef \
         -o Dpkg::Options::=--force-confold install -y --no-install-recommends \
-        claude-desktop firefox openssh-client nftables curl ca-certificates
+        claude-desktop firefox openssh-client openssh-server openssh-sftp-server nftables curl ca-certificates
     apt-get clean
 fi
 # Packages can replace their own policy files. Reapply the product's policy,
