@@ -283,15 +283,16 @@ class SshTransport:
     """
 
     def __init__(self, port, key):
-        # A Unix socket path must stay short (104 bytes on macOS).
-        self.control = tempfile.mkdtemp(prefix='cis-', dir='/tmp' if os.path.isdir('/tmp') else None)
+        # A private directory per session; the socket name is short because a
+        # Unix socket path is limited to 104 bytes on macOS.
+        self.control = tempfile.mkdtemp(prefix='cis-')
         self.command = ['ssh', '-p', str(port), '-i', str(key), '-o', 'BatchMode=yes',
                         '-o', 'IdentitiesOnly=yes', '-o', 'PreferredAuthentications=publickey',
                         # The forward exists only on 127.0.0.1 for the VM this
                         # process started; its host key changes with the guest.
                         '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
                         '-o', 'LogLevel=ERROR', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15',
-                        '-o', 'ControlMaster=auto', '-o', 'ControlPath=' + self.control + '/%C',
+                        '-o', 'ControlMaster=auto', '-o', 'ControlPath=' + os.path.join(self.control, 'mux'),
                         '-o', 'ControlPersist=60', 'claude@127.0.0.1']
         try:
             self.run('true')
