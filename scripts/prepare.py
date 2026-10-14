@@ -17,8 +17,12 @@ import release_image
 
 
 def prepare(config_path, if_needed=False):
+    import json
+    from host_access import prepare_access
     cfg = environment.load_config(config_path)
     disk = environment.local_path(cfg['disk'])
+    prepare_access(cfg, disk.parent)
+    config_path.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
     if if_needed and disk.is_file() and environment.local_path(cfg['seed']).is_file():
         return
     if disk.exists() or environment.local_path(cfg['seed']).exists():

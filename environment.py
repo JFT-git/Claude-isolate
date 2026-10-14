@@ -196,6 +196,9 @@ def command(cfg, check=True):
         # hostfwd binds to localhost only: the host can SSH into the guest,
         # but no other machine on the network can reach it.
         net = 'user,id=isolated,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22'
+    else:
+        # Same localhost-only SSH forward, alongside the existing guestfwd relay.
+        net += ',hostfwd=tcp:127.0.0.1:2222-:22'
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
@@ -233,6 +236,14 @@ def command(cfg, check=True):
         # Shared folder on Windows: SFTP over localhost:2222 (bundled QEMU lacks virtfs).
         # It stays in the app data directory; QEMU never opens it.
         (app_directory(cfg) / 'shared').mkdir(parents=True, exist_ok=True)
+    if system != 'Windows':
+        # macOS and Linux: same guest clipboard port, over a Unix socket QEMU
+        # listens on (wait=off, so startup does not block for a client).
+        from host_access import clipboard_socket
+        clip = clipboard_socket(cfg)
+        cmd += ['-device', 'virtio-serial-pci',
+                '-chardev', 'socket,id=clipboard,path=' + qemu_path(clip) + ',server=on,wait=off',
+                '-device', 'virtserialport,chardev=clipboard,name=claude.clipboard,id=clipboardport']
     if arch == 'aarch64':
         firmware = openable(cfg['firmware'])
         if check and not firmware.is_file():
@@ -783,6 +794,18 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 clipboard.start()
                                 shared.start()
                                 control.wait_ready()
+                            else:
+                                from host_access import UnixClipboard, clipboard_socket
+                                from windows.shared_sync import SharedSync
+                                clip = clipboard_socket(cfg)
+                                clip.parent.mkdir(parents=True, exist_ok=True)
+                                clip.unlink(missing_ok=True)
+                                data_dir = Path(cfg['disk']).expanduser().parent
+                                clipboard = UnixClipboard(cfg)
+                                shared = SharedSync(cfg, data_dir / 'tools' / 'ssh_host_key',
+                                                    local_root=data_dir / 'shared')
+                                clipboard.start()
+                                shared.start()
                             if proc.poll() is None and not offline:
                                 print(json.dumps({'message': 'Linux восстановлен' if control and control.restored
                                                   else 'Linux запускается', 'running': True}, ensure_ascii=False), flush=True)

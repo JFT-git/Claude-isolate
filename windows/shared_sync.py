@@ -10,11 +10,11 @@ REMOTE_ROOT = '/home/claude/Shared'
 
 
 class SharedSync:
-    def __init__(self, cfg, key_path):
+    def __init__(self, cfg, key_path, local_root=None):
         from windows.qemu_paths import app_directory
         self.cfg = cfg
         self.key_path = Path(key_path)
-        self.local_root = app_directory(cfg) / 'shared'
+        self.local_root = Path(local_root) if local_root else app_directory(cfg) / 'shared'
         self.local_root.mkdir(parents=True, exist_ok=True)
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
@@ -46,7 +46,7 @@ class SharedSync:
                 finally:
                     sftp.close()
             except Exception as error:
-                message = 'Windows shared folder sync: ' + str(error)
+                message = 'Shared folder sync: ' + str(error)
                 if message != reported:
                     print(message, file=sys.stderr, flush=True)
                     reported = message
@@ -73,7 +73,7 @@ class SharedSync:
                                auth_timeout=30)
                 return client
             except (paramiko.SSHException, OSError) as error:
-                message = 'Windows shared folder sync connect: ' + type(error).__name__ + ': ' + str(error)
+                message = 'Shared folder sync connect: ' + type(error).__name__ + ': ' + str(error)
                 if 'banner' not in message and message != getattr(self, 'last_connect_error', ''):
                     print(message, file=sys.stderr, flush=True)
                     self.last_connect_error = message

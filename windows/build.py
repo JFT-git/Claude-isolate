@@ -38,7 +38,7 @@ def smoke(folder, directory):
     if not (folder / '_internal/certifi/cacert.pem').is_file():
         raise RuntimeError('Installer is missing bundled TLS trust roots')
     result = run([str(core), '--version'], capture_output=True, text=True, env=env, timeout=30)
-    if 'Claude Isolate 1.0.5' not in result.stdout:
+    if 'Claude Isolate 1.0.6' not in result.stdout:
         raise RuntimeError('Worker version smoke test failed')
     for executable in ('qemu/qemu-system-x86_64.exe', 'qemu/qemu-img.exe', 'GnuPG/bin/gpg.exe'):
         run([str(folder / 'runtime' / executable), '--version'], capture_output=True, env=env, timeout=30)
@@ -100,7 +100,7 @@ def main():
         except (OSError, subprocess.CalledProcessError):
             commit = 'unknown'
     (folder / 'BUILD.json').write_text(json.dumps({
-        'version': '1.0.5', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
+        'version': '1.0.6', 'target': 'windows-x64', 'kind': 'gui-and-worker-executables',
         'commit': commit,
     }, indent=2), encoding='utf-8')
     with tempfile.TemporaryDirectory(prefix='Claude Isolate smoke ') as temporary:

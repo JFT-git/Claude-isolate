@@ -116,6 +116,9 @@ def boot_tail(path):
 
 
 def prepare(data, cfg):
+    from host_access import prepare_access
+    prepare_access(cfg, data)
+    write_config(data / 'environment.json', cfg)
     if platform.system() == 'Darwin':
         original = environment.tool('qemu-system-' + cfg['arch'])
         cfg['qemu_executable'] = vm_bundle.provision(data, original)
