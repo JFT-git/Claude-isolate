@@ -3,6 +3,7 @@ import json
 import io
 import os
 from pathlib import Path
+import platform
 import queue
 import re
 import subprocess
@@ -73,6 +74,14 @@ def image_tool(cfg):
 
 
 def image_command(cfg, *args):
+    if platform.system() == 'Windows':
+        from windows.qemu_paths import open_for_qemu
+        translated = []
+        for arg in args:
+            text = str(arg)
+            absolute = os.path.isabs(text) or (len(text) > 2 and text[1] == ':')
+            translated.append(str(open_for_qemu(text, cfg)) if absolute and not text.startswith('-') else text)
+        args = tuple(translated)
     result = subprocess.run([image_tool(cfg), *args], check=True, capture_output=True,
                             text=True, encoding='utf-8', errors='replace', timeout=120,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -108,13 +117,21 @@ def recover(data, cfg):
     transaction = json.loads(journal.read_text(encoding='utf-8'))
     journal_disk = Path(transaction['disk'])
     current_disk = Path(cfg['disk'])
-    if journal_disk.resolve() != current_disk.resolve():
-        # 1.0.1 moved a disk onto an ASCII path, and 1.0.2 moves one that landed in
-        # ProgramData. The journal still names the path from before that move.
+    from windows.qemu_paths import paths_match
+    if not paths_match(journal_disk, current_disk):
+        # Older builds moved the disk onto an ASCII path or into ProgramData.
+        # 1.0.3 keeps it in the user profile and opens it by a drive letter.
         migrated = cfg.get('qemu_migrated_disk')
-        if not (migrated and Path(migrated).resolve() == journal_disk.resolve() and current_disk.is_file()):
+        try:
+            current_exists = current_disk.is_file()
+        except OSError:
+            current_exists = False
+        if not (migrated and paths_match(migrated, journal_disk) and current_exists):
             raise RuntimeError('Незавершённое обновление относится к другому диску. Автоматический запуск отменён.')
-        transaction['disk'] = str(current_disk.resolve())
+        try:
+            transaction['disk'] = str(current_disk.resolve())
+        except OSError:
+            transaction['disk'] = str(current_disk)
         if isinstance(transaction.get('configuration'), dict):
             transaction['configuration']['disk'] = transaction['disk']
         write_config(journal, transaction)
@@ -212,13 +229,14 @@ def run_helper(command, cfg, log, ready):
                 if time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(command, 1200)
                 if not attached and log.exists() and ready in log.read_text(encoding='utf-8', errors='replace'):
-                    filename = str(Path(cfg['disk']).resolve())
-                    if os.name == 'nt':
-                        from windows.qemu_paths import path_is_ascii, qemu_argument_path
-                        if not path_is_ascii(filename):
-                            filename = str(qemu_argument_path(cfg['disk']))
-                            if not path_is_ascii(filename):
-                                raise RuntimeError('QEMU не может открыть диск: путь содержит нелатинские буквы')
+                    try:
+                        filename = str(Path(cfg['disk']).resolve())
+                    except OSError:
+                        filename = str(cfg['disk'])
+                    if platform.system() == 'Windows':
+                        from windows.qemu_paths import open_for_qemu, safe_for_qemu
+                        if not safe_for_qemu(filename):
+                            filename = str(open_for_qemu(cfg['disk'], cfg))
                     request('blockdev-add', dict(driver='qcow2', **{'node-name': 'update-target'},
                         file=dict(driver='file', filename=filename)))
                     request('device_add', dict(driver='virtio-blk-pci', drive='update-target',
@@ -282,17 +300,14 @@ def maintenance(cfg, base, directory, content):
     (seed_files / 'network-config').write_text('version: 2\nethernets: {}\n', encoding='utf-8')
     seed, helper, log = directory / 'seed.iso', directory / 'helper.qcow2', directory / 'boot.log'
     seed_iso(seed_files, seed)
-    from windows.qemu_paths import input_for_qemu, path_is_ascii, qemu_argument_path
+    from windows.qemu_paths import input_for_qemu, open_for_qemu
     base = input_for_qemu(base, cfg)
-    image_command(cfg, 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(Path(base).resolve()), str(helper))
+    image_command(cfg, 'create', '-f', 'qcow2', '-F', 'qcow2', '-b', str(base), str(helper))
 
     def opened(path):
-        if os.name != 'nt' or path_is_ascii(path):
+        if platform.system() != 'Windows':
             return path
-        argument = qemu_argument_path(path)
-        if not path_is_ascii(argument):
-            raise RuntimeError('QEMU не может открыть файл: путь содержит нелатинские буквы')
-        return argument
+        return open_for_qemu(path, cfg)
 
     command = [str(opened(cfg['qemu_executable'])), '-nodefaults', '-machine', 'q35',
                '-accel', 'tcg,thread=multi', '-cpu', 'max', '-m', str(maintenance_memory()), '-smp', '2',
@@ -322,7 +337,10 @@ def upgrade(data, cfg):
     from windows.backend import emit, find_tool, write_config, GUEST_GATEWAY_VERSION
     from windows.qemu_paths import adopt_qemu_paths
     adopt_qemu_paths(cfg, data=data)
-    disk = Path(cfg['disk']).resolve()
+    try:
+        disk = Path(cfg['disk']).resolve()
+    except OSError:
+        disk = Path(cfg['disk']).absolute()
     with exclusive(disk.with_suffix('.launch.lock')):
         recover(data, cfg)
         if cfg.get('guest_revision') == REVISION and cfg.get('guest_gateway_version') == GUEST_GATEWAY_VERSION:

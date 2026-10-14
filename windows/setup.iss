@@ -4,13 +4,14 @@
 [Setup]
 AppId={{F426138A-7ECA-487B-A6CD-47EB31C40462}
 AppName=Claude Isolate
-AppVersion=1.0.2
+AppVersion=1.0.3
 AppPublisher=Claude Isolate project
 AppPublisherURL=https://github.com/JFT-git/Claude-isolate
 DefaultDirName={localappdata}\Programs\Claude Isolate
 DefaultGroupName=Claude Isolate
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+UsePreviousAppDir=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.18362
@@ -41,6 +42,42 @@ Name: "{autodesktop}\Claude Isolate"; Filename: "{app}\Claude Isolate.exe"; Task
 Filename: "{app}\Claude Isolate.exe"; Description: "{cm:LaunchProgram,Claude Isolate}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function PreviousUninstallCommand: String;
+var
+  Key, Value: String;
+begin
+  // Same AppId as [Setup]. Per-user installs write the key under HKCU.
+  Result := '';
+  Key := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{F426138A-7ECA-487B-A6CD-47EB31C40462}_is1';
+  if RegQueryStringValue(HKCU, Key, 'UninstallString', Value) then
+    Result := Value
+  else if RegQueryStringValue(HKLM, Key, 'UninstallString', Value) then
+    Result := Value;
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Command, Executable: String;
+  Code: Integer;
+begin
+  // Remove the previous program files before copying the new ones.
+  // The uninstaller deletes only the install directory. It does not delete
+  // the user profile or a QEMU drive mapping.
+  Result := '';
+  NeedsRestart := False;
+  Command := PreviousUninstallCommand;
+  if Command = '' then
+    Exit;
+  Executable := RemoveQuotes(Command);
+  if not Exec(Executable, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+  begin
+    Result := 'Не удалось запустить удаление предыдущей версии Claude Isolate.';
+    Exit;
+  end;
+  if Code <> 0 then
+    Result := 'Не удалось удалить предыдущую версию Claude Isolate. Код ' + IntToStr(Code) + '.';
+end;
+
 function GuestData: String;
 begin
   Result := ExpandConstant('{param:GUESTDATA|}');

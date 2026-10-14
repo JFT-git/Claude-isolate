@@ -21,7 +21,7 @@ import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '1.0.2'
+VERSION = '1.0.3'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
@@ -172,7 +172,7 @@ def dependencies(data, cfg):
     cfg['qemu_executable'] = str(tools[0])
     from windows.qemu_paths import adopt_qemu_paths
     adopt_qemu_paths(cfg, data=data, install_dir=runtime.parent)
-    # qemu-img must be the ASCII path too: it opens images with the same ANSI API.
+    # qemu-img is started by its real path. Image arguments use the drive letter.
     os.environ['PATH'] = str(Path(cfg['qemu_executable']).parent) + os.pathsep + os.environ.get('PATH', '')
     write_config(data / 'environment.json', cfg)
 
@@ -340,7 +340,9 @@ def preboot(path, cfg, timeout=None, settle=None, poll=1.0):
 def prepare(data, cfg):
     if platform.system() == 'Windows':
         from windows.qemu_paths import adopt_qemu_paths
-        before = {key: cfg.get(key) for key in ('disk', 'seed', 'boot_log', 'qemu_executable', 'qemu_data_dir', 'qemu_host_dir')}
+        before = {key: cfg.get(key) for key in (
+            'disk', 'seed', 'boot_log', 'qemu_executable', 'qemu_data_dir', 'qemu_host_dir',
+            'qemu_drive', 'qemu_exe_drive')}
         adopt_qemu_paths(cfg, data=data)
         if any(cfg.get(key) != before[key] for key in before):
             write_config(data / 'environment.json', cfg)

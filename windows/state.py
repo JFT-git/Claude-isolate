@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import time
 
@@ -63,7 +64,11 @@ def discard(cfg, delete_snapshot=True):
     if delete_snapshot and Path(cfg['disk']).is_file():
         try:
             # Fails harmlessly if there is no such snapshot or QEMU is running.
-            subprocess.run([image_tool(cfg), 'snapshot', '-d', TAG, str(cfg['disk'])], capture_output=True,
+            disk = cfg['disk']
+            if platform.system() == 'Windows':
+                from windows.qemu_paths import open_for_qemu
+                disk = open_for_qemu(disk, cfg)
+            subprocess.run([image_tool(cfg), 'snapshot', '-d', TAG, str(disk)], capture_output=True,
                            timeout=300, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         except (OSError, subprocess.SubprocessError):
             pass

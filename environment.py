@@ -149,11 +149,11 @@ def command(cfg, check=True):
     if system == 'Windows':
         # QEMU opens file arguments with the ANSI code page. Do this before any
         # path is copied into argv, including a plan that never starts the VM.
-        from windows.qemu_paths import adopt_qemu_paths, app_directory, assert_qemu_argv, qemu_argument_path
+        from windows.qemu_paths import adopt_qemu_paths, app_directory, assert_qemu_argv, open_for_qemu
         adopt_qemu_paths(cfg)
 
         def openable(value):
-            return qemu_argument_path(value)
+            return open_for_qemu(value, cfg)
     else:
         def openable(value):
             return local_path(value)
@@ -610,11 +610,13 @@ def prepare(cfg, base, digest):
                                           encoding='utf-8', newline='\n')
         image_tool = tool('qemu-img')
         image_input = base
+        staged_visible = staged_disk
         if platform.system() == 'Windows':
-            from windows.qemu_paths import input_for_qemu
-            image_input = input_for_qemu(base, cfg)
-        subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(image_input), str(staged_disk)], check=True)
-        subprocess.run([image_tool, 'resize', str(staged_disk), '64G'], check=True)
+            from windows.qemu_paths import input_for_qemu, open_for_qemu
+            image_input = open_for_qemu(input_for_qemu(base, cfg), cfg)
+            staged_visible = open_for_qemu(staged_disk, cfg)
+        subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(image_input), str(staged_visible)], check=True)
+        subprocess.run([image_tool, 'resize', str(staged_visible), '64G'], check=True)
         # Resizing leaves the backup GPT at the old end of the disk. A slow
         # emulated boot then misses LABEL=BOOT and LABEL=UEFI and waits in an
         # emergency shell. Repair the header and fstab before the seed is
