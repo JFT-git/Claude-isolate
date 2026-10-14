@@ -1,13 +1,16 @@
-"""Host SSH client keys for localhost guest access (no external ssh-keygen)."""
+"""Host SSH client keys for localhost guest access.
+
+The Windows build bundles cryptography and needs no ssh-keygen. macOS and
+Linux run with the standard library only and use the system ssh-keygen.
+"""
 import csv
 import io
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-
-from cryptography.hazmat.primitives.asymmetric import ed25519
-from cryptography.hazmat.primitives import serialization
 
 COMMENT = 'claude-isolate'
 
@@ -32,6 +35,11 @@ def ensure_client_keypair(path):
         restrict_private_key(path)
         return public.read_text(encoding='utf-8').strip() + '\n'
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from cryptography.hazmat.primitives.asymmetric import ed25519
+        from cryptography.hazmat.primitives import serialization
+    except ImportError:
+        return generate_with_ssh_keygen(path)
     private = ed25519.Ed25519PrivateKey.generate()
     path.write_bytes(private.private_bytes(
         encoding=serialization.Encoding.PEM,
@@ -47,3 +55,19 @@ def ensure_client_keypair(path):
         format=serialization.PublicFormat.OpenSSH).decode('ascii') + ' ' + COMMENT
     public.write_text(public_line + '\n', encoding='utf-8')
     return public_line + '\n'
+
+
+def generate_with_ssh_keygen(path):
+    tool = shutil.which('ssh-keygen')
+    if not tool:
+        raise RuntimeError('Не найден ssh-keygen: установите OpenSSH-клиент (на Linux пакет openssh-client).')
+    public = path.with_suffix('.pub')
+    # Create both files next to the target, then publish them together.
+    with tempfile.TemporaryDirectory(prefix='.key-', dir=path.parent) as folder:
+        staged = Path(folder) / 'key'
+        subprocess.run([tool, '-q', '-t', 'ed25519', '-N', '', '-C', COMMENT, '-f', str(staged)],
+                       check=True, capture_output=True, timeout=60)
+        os.chmod(staged, 0o600)
+        os.replace(staged.with_suffix('.pub'), public)
+        os.replace(staged, path)
+    return public.read_text(encoding='utf-8').strip() + '\n'
