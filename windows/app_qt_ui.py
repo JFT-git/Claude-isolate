@@ -18,8 +18,20 @@ import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+import environment
 from windows import backend
 from windows.job import Job
+
+
+def worker_error(error):
+    """Explain why the background worker could not be started."""
+    if getattr(error, 'winerror', None) in (2, 3) or isinstance(error, FileNotFoundError):
+        return ('Не найден «Claude Isolate Core.exe». Обычно его удаляет или блокирует антивирус. '
+                'Переустановите Claude Isolate и добавьте его папку в исключения антивируса.')
+    if getattr(error, 'winerror', None) in (225, 1260, 5):
+        return ('Windows или антивирус запретили запуск «Claude Isolate Core.exe» (' + str(error) + '). '
+                'Разрешите его в антивирусе или политике Windows и повторите.')
+    return 'Не удалось запустить фоновый процесс: ' + str(error)
 
 
 def worker_command(action, data):
@@ -191,14 +203,14 @@ class MainWindow(QMainWindow):
         settings_layout.addWidget(self.memory_note)
         layout.addWidget(settings)
 
-        # Shared folder hint
-        shared = self.data / 'shared'
-        shared_hint = QLabel(f'📁 Общая папка: {shared}\n'
-                            'Файлы здесь видны в госте как /home/claude/Shared')
-        shared_hint.setWordWrap(True)
-        shared_hint.setStyleSheet('color: #666; font-size: 12px; padding: 4px 8px; '
-                                  'background: #f5f5f5; border-radius: 4px;')
-        layout.addWidget(shared_hint)
+        # Shared folder and SSH hint
+        self.shared_hint = QLabel()
+        self.shared_hint.setWordWrap(True)
+        self.shared_hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.shared_hint.setStyleSheet('color: #666; font-size: 12px; padding: 4px 8px; '
+                                       'background: #f5f5f5; border-radius: 4px;')
+        self._show_access(environment.DEFAULT_SSH_PORT)
+        layout.addWidget(self.shared_hint)
 
         # Open folder button
         open_btn = QPushButton('📂  Открыть папку среды и журналы')
@@ -239,19 +251,46 @@ class MainWindow(QMainWindow):
             }
         '''
 
+    def _show_access(self, port):
+        self.ssh_port = port
+        key = self.data / 'tools' / 'ssh_host_key'
+        self.shared_hint.setText(
+            f'📁 Общая папка: {self.data / "shared"}\n'
+            'Файлы здесь видны в госте как /home/claude/Shared\n'
+            f'🔑 SSH: ssh -p {port} -i "{key}" claude@127.0.0.1')
+
     def _load_config(self):
-        _, cfg = backend.config(self.data)
+        try:
+            _, cfg = backend.config(self.data)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            self.status_label.setText('Не удалось прочитать настройки среды: ' + str(error))
+            return
         mode = cfg.get('resources_mode')
         idx = {'auto': 0, 'minimal': 1, 'economy': 2, 'standard': 3}.get(mode)
-        self.resources.setCurrentIndex(idx if idx is not None else
-                                      1 if cfg['memory_mb'] <= 1024 else 2 if cfg['memory_mb'] <= 3072 else 3)
-        self.acceleration.setCurrentIndex(backend.ACCELERATION_MODES.index(cfg.get('acceleration_mode', 'auto')))
+        # Showing the saved settings is not a change of them. Without blocking
+        # the signals, opening the window started a worker that rewrote the
+        # settings and deleted the saved Linux state (the fast start).
+        for box in (self.resources, self.acceleration):
+            box.blockSignals(True)
+        try:
+            self.resources.setCurrentIndex(idx if idx is not None else
+                                          1 if cfg['memory_mb'] <= 1024 else 2 if cfg['memory_mb'] <= 3072 else 3)
+            mode = cfg.get('acceleration_mode', 'auto')
+            self.acceleration.setCurrentIndex(backend.ACCELERATION_MODES.index(mode)
+                                              if mode in backend.ACCELERATION_MODES else 0)
+        finally:
+            for box in (self.resources, self.acceleration):
+                box.blockSignals(False)
+        self._show_access(environment.ssh_port(cfg))
 
     def start(self):
         if self.task:
             return
         self.status_label.setText('Подготовка и запуск среды…')
-        self._launch('start')
+        try:
+            self._launch('start')
+        except OSError as error:
+            self.status_label.setText(worker_error(error))
 
     def _launch(self, action):
         if self.task:
@@ -259,14 +298,24 @@ class MainWindow(QMainWindow):
         self.vm_started = False
         self.last_error = None
         self.memory_note.setText('')
-        self.job = Job()
+        try:
+            self.job = Job()
+        except OSError:
+            # Windows can refuse a job inside another one (some remote and
+            # sandboxed sessions). The worker still stops QEMU on its own exit.
+            self.job = None
         try:
             self.task = subprocess.Popen(
                 worker_command(action, self.data) + ['--start-gate'],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW)
-            self.job.assign(self.task)
+            if self.job:
+                try:
+                    self.job.assign(self.task)
+                except OSError:
+                    self.job.close()
+                    self.job = None
             self.task.stdin.write('GO\n')
             self.task.stdin.flush()
             self.task.stdin.close()
@@ -279,7 +328,8 @@ class MainWindow(QMainWindow):
                 self.task.terminate()
                 self.task.wait(timeout=10)
             self.task = None
-            self.job.close()
+            if self.job:
+                self.job.close()
             self.job = None
             raise
 
@@ -292,6 +342,8 @@ class MainWindow(QMainWindow):
             self.vm_started = True
         elif value.get('running') is False:
             self.vm_started = False
+        if isinstance(value.get('ssh_port'), int):
+            self._show_access(value['ssh_port'])
         msg = value.get('message')
         if msg:
             if value.get('memory_warning'):
@@ -315,7 +367,7 @@ class MainWindow(QMainWindow):
         try:
             self._launch(('resources-auto', 'minimal', 'economy', 'standard')[self.resources.currentIndex()])
         except (OSError, RuntimeError) as error:
-            self.status_label.setText(str(error))
+            self.status_label.setText(worker_error(error))
 
     def set_acceleration(self):
         if self.task:
@@ -323,18 +375,22 @@ class MainWindow(QMainWindow):
         try:
             self._launch('accel-' + backend.ACCELERATION_MODES[self.acceleration.currentIndex()])
         except (OSError, RuntimeError) as error:
-            self.status_label.setText(str(error))
+            self.status_label.setText(worker_error(error))
 
     def stop(self, action='suspend', restart=False):
         if self.stopping or self.auxiliary:
             return
         if not self.vm_started:
             if action == 'stop' and not self.task:
-                self.auxiliary = subprocess.Popen(
-                    worker_command('stop', self.data),
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding='utf-8', errors='replace',
-                    creationflags=subprocess.CREATE_NO_WINDOW)
+                try:
+                    self.auxiliary = subprocess.Popen(
+                        worker_command('stop', self.data),
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, encoding='utf-8', errors='replace',
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+                except OSError as error:
+                    self.status_label.setText(worker_error(error))
+                    return
                 self.finish_thread = FinishThread(self.auxiliary, 30)
                 self.finish_thread.finished_with.connect(self._on_finish)
                 self.finish_thread.start()
@@ -351,7 +407,7 @@ class MainWindow(QMainWindow):
                 text=True, encoding='utf-8', errors='replace',
                 creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError as error:
-            self.status_label.setText(str(error))
+            self.status_label.setText(worker_error(error))
             self.stopping = self.restarting = self.closing = False
             return
         self.finish_thread = FinishThread(self.auxiliary, 900 if action == 'suspend' else 10)
@@ -372,6 +428,14 @@ class MainWindow(QMainWindow):
             self.start()
 
     def _poll(self):
+        try:
+            self._refresh()
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            # The worker may be replacing a state file this very moment, or an
+            # antivirus holds it. The next poll, 0.5 s later, reads it again.
+            pass
+
+    def _refresh(self):
         if self.task and self.task.poll() is not None:
             returncode = self.task.returncode
             self.task = None

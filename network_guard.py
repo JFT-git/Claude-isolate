@@ -148,9 +148,28 @@ def _replace_state(temporary, path):
         raise ctypes.WinError(ctypes.get_last_error())
     try:
         if not api.SetFileInformationByHandle(handle, 22, ctypes.byref(info), ctypes.sizeof(info)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            code = ctypes.get_last_error()
+            # FAT/exFAT, some network redirectors and filter drivers do not
+            # implement FileRenameInfoEx. A plain replace still works there.
+            if code not in (1, 50, 87):
+                raise ctypes.WinError(code)
+            unsupported = True
+        else:
+            unsupported = False
     finally:
         api.CloseHandle(handle)
+    if unsupported:
+        os.replace(temporary, path)
+
+
+def read_text(path, limit=None):
+    """Read a whole UTF-8 file without blocking an atomic replacement of it."""
+    with _state_stream(path) as stream:
+        value = stream.read(-1 if limit is None else limit + 1)
+    if limit is not None and len(value) > limit:
+        raise ValueError('Oversized state file')
+    # Notepad on older Windows saves UTF-8 with a byte order mark.
+    return value.removeprefix('﻿')
 
 
 def read_state(path):
@@ -167,23 +186,28 @@ def publish(path, result):
     write_state(path, value)
 
 
-def write_state(path, value):
+def write_state(path, value, *, indent=None, durable=False):
     """Atomically publish JSON, including while Windows readers hold it open."""
     path = Path(path)
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                      prefix='.' + path.name + '-', suffix='.tmp', delete=False) as output:
         temporary = Path(output.name)
-        json.dump(value, output)
+        json.dump(value, output, ensure_ascii=indent is None, indent=indent)
+        if durable:
+            output.flush()
+            os.fsync(output.fileno())
     try:
-        for attempt in range(20):
+        # An antivirus or indexer can hold the target or the new file for a
+        # moment. Retry for up to about two seconds instead of failing a start.
+        for attempt in range(40):
             try:
                 _replace_state(temporary, path)
                 break
             except PermissionError as error:
                 # Other host software may temporarily deny delete sharing too.
-                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 19:
+                if os.name != 'nt' or getattr(error, 'winerror', None) not in (5, 32, 33) or attempt == 39:
                     raise
-                time.sleep(.01)
+                time.sleep(.01 if attempt < 10 else .1)
     finally:
         try:
             temporary.unlink(missing_ok=True)

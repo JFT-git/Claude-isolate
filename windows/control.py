@@ -20,6 +20,10 @@ from session_lock import exclusive
 from windows.pipe import NamedPipe
 
 COMMANDS = ('query-status', 'query-mice', 'system_powerdown', 'suspend')
+# QEMU creates its pipes only after Windows has loaded and scanned its many
+# DLLs. On a slow disk with an antivirus scanning a new installation, this
+# can take more than a minute; keep connecting while QEMU is still alive.
+PIPE_TIMEOUT = 180
 
 
 def decode_qemu_output(data):
@@ -140,7 +144,7 @@ class Control:
         write_state(self.files['ready'], dict(session=self.session, ready=False))
         self.thread.start()
 
-    def wait_ready(self, timeout=60):
+    def wait_ready(self, timeout=PIPE_TIMEOUT):
         if self.restore:
             timeout = max(timeout, 600)
         deadline = time.monotonic() + timeout
@@ -349,7 +353,7 @@ class Control:
     def run(self):
         pipe = None
         try:
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + PIPE_TIMEOUT
             while not self.stop.is_set() and self.process.poll() is None:
                 try:
                     pipe = self.connector('\\\\.\\pipe\\' + self.cfg['qmp_pipe'])

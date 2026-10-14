@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import time
 
@@ -40,9 +41,53 @@ def stable_command(command):
     return result
 
 
+_DRIVE_FILE = re.compile(r'file=(?:[^,]|,,)*,?')
+_HOST_FORWARD = re.compile(r',hostfwd=[^,]*')
+
+
+def hardware_command(command):
+    """stable_command without host-side details that do not reach the guest.
+
+    The drive letter QEMU opens files through, the installation path and the
+    localhost SSH port can change between launches. The saved machine does
+    not depend on them, so they must not discard a fast start.
+    """
+    items = stable_command(command)
+    result = []
+    for index, item in enumerate(items):
+        flag = items[index - 1] if index else None
+        if index == 0:
+            item = 'qemu'
+        elif flag == '-drive':
+            item = _DRIVE_FILE.sub('', item)
+        elif flag == '-netdev':
+            item = _HOST_FORWARD.sub('', item)
+        elif flag in ('-L', '-serial'):
+            item = flag
+        result.append(item)
+    return result
+
+
+def qemu_version(cfg):
+    """The bundled QEMU's VERSION file; a new QEMU may not load an old state."""
+    if not cfg.get('qemu_executable'):
+        return None
+    try:
+        return (Path(cfg['qemu_executable']).parent / 'VERSION').read_text(encoding='utf-8').strip()
+    except (OSError, ValueError):
+        return None
+
+
 def identity(cfg, command):
-    # Restoring requires the same QEMU, devices and memory layout; any
-    # change of resources, accelerator or installation invalidates it.
+    # Restoring requires the same devices and memory layout; any change of
+    # resources, accelerator, QEMU version or guest revision invalidates it.
+    return hashlib.sha256(json.dumps(dict(command=hardware_command(command), revision=cfg.get('guest_revision'),
+                                          qemu=qemu_version(cfg)),
+                                     sort_keys=True).encode()).hexdigest()
+
+
+def legacy_identity(cfg, command):
+    """Identity written by 1.0.6 and older, so their saved states still load."""
     return hashlib.sha256(json.dumps(dict(command=stable_command(command), revision=cfg.get('guest_revision')),
                                      sort_keys=True).encode()).hexdigest()
 
@@ -90,7 +135,8 @@ def usable(cfg, command):
         return False
     try:
         data = json.loads(metadata(cfg).read_text(encoding='utf-8'))
-        valid = (isinstance(data, dict) and data.get('identity') == identity(cfg, command)
+        valid = (isinstance(data, dict)
+                 and data.get('identity') in (identity(cfg, command), legacy_identity(cfg, command))
                  and data.get('disk') == disk_stamp(cfg))
     except (OSError, ValueError, TypeError):
         valid = False

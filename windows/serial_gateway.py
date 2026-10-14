@@ -13,6 +13,7 @@ import threading
 import time
 
 import environment
+from windows.control import PIPE_TIMEOUT
 from windows.pipe import gateway_pipe
 
 PORT_ID = 'gatewayport'
@@ -248,7 +249,7 @@ class Gateway:
     def run(self):
         pipe = None
         try:
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + PIPE_TIMEOUT
             while not self.stop.is_set():
                 try:
                     pipe = gateway_pipe('\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-gateway')

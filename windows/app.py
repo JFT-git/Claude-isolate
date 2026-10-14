@@ -28,7 +28,9 @@ def main():
     kernel.CreateMutexW.restype = ctypes.c_void_p
     kernel.CloseHandle.argtypes = [ctypes.c_void_p]
     try:
-        ctypes.WinDLL('user32').SetProcessDPIAware()
+        # Qt 6 declares per-monitor DPI awareness itself. An earlier
+        # SetProcessDPIAware() locks the process to system DPI first, so Qt
+        # fails to change it and the window is blurry on a second monitor.
         name = 'Local\\Claude-Isolate-' + hashlib.sha256(
             os.path.normcase(str(args.data.resolve())).encode()).hexdigest()
         mutex = kernel.CreateMutexW(None, 0, name)
@@ -58,11 +60,26 @@ def main():
                 '{"gui": false, "error": "' + str(error).replace('"', "'") + '"}',
                 encoding='utf-8')
             raise SystemExit(1)
+        # The window process has no console: without a dialog and a log file
+        # a failure here looks like the program silently not starting.
+        log = None
         try:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(None, 'Claude Isolate', str(error))
+            import traceback
+            folder = args.data.resolve()
+            folder.mkdir(parents=True, exist_ok=True)
+            log = folder / 'launcher-error.log'
+            with log.open('a', encoding='utf-8') as output:
+                output.write(traceback.format_exc() + '\n')
         except Exception:
-            print(str(error), file=sys.stderr)
+            log = None
+        text = ('Claude Isolate не удалось открыть окно: ' + str(error)
+                + ('\n\nПодробности: ' + str(log) if log else ''))
+        try:
+            user = ctypes.WinDLL('user32')
+            user.MessageBoxW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint]
+            user.MessageBoxW(None, text, 'Claude Isolate', 0x10)  # MB_ICONERROR
+        except Exception:
+            print(text, file=sys.stderr)
         raise SystemExit(1)
     finally:
         if mutex:

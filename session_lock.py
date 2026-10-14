@@ -15,13 +15,13 @@ def exclusive(path):
             try:
                 msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as error:
-                raise RuntimeError('Environment is already running or stopping') from error
+                raise RuntimeError('Среда уже запущена или ещё завершается. Подождите несколько секунд и повторите.') from error
         else:
             import fcntl
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as error:
-                raise RuntimeError('Environment is already running or stopping') from error
+                raise RuntimeError('Среда уже запущена или ещё завершается. Подождите несколько секунд и повторите.') from error
         try:
             yield
         finally:

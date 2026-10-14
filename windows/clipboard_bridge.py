@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from windows.clipboard_framing import TEXT, PNG, pack_text, pack_png, parse
 from windows.clipboard_image import dib_to_png, png_to_dib
+from windows.control import PIPE_TIMEOUT
 from windows.pipe import gateway_pipe
 
 CF_UNICODETEXT = 13
@@ -34,7 +35,7 @@ class ClipboardBridge:
     def run(self):
         pipe = None
         try:
-            deadline = time.monotonic() + 60
+            deadline = time.monotonic() + PIPE_TIMEOUT
             path = '\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-clipboard'
             while not self.stop.is_set():
                 try:
