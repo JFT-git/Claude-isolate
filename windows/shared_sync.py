@@ -19,10 +19,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 REMOTE_ROOT = '/home/claude/Shared'
 PARTIAL = '.claude-partial'
 INTERVAL = 2.0
+# Listing the guest costs it a process (or an SSH session) each time, which is
+# expensive under software emulation. While nothing changes, ask less often;
+# a change on the host is still sent within INTERVAL.
+IDLE_INTERVAL = 16.0
+# A failed SSH handshake costs the guest a key exchange; back off up to this.
+RETRY_LIMIT = 60.0
 WINDOWS_DEVICES = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{n}' for n in range(1, 10)),
                    *(f'LPT{n}' for n in range(1, 10))}
 
@@ -63,8 +70,15 @@ class SharedSync:
                 if not transport:
                     continue
                 transport.ensure_root()
+                interval, previous, last_pass = INTERVAL, None, None
                 while not self.stop.is_set():
-                    self.sync_once(transport)
+                    local = self.snapshot(self.local_root)
+                    now = time.monotonic()
+                    if local != previous or last_pass is None or now - last_pass >= interval:
+                        changed = self.sync_once(transport, local)
+                        previous = self.snapshot(self.local_root)
+                        last_pass = now
+                        interval = INTERVAL if changed else min(interval * 2, IDLE_INTERVAL)
                     self.stop.wait(INTERVAL)
             except Exception as error:
                 self.report('Shared folder sync: ' + type(error).__name__ + ': ' + str(error))
@@ -76,7 +90,13 @@ class SharedSync:
     def connect(self):
         from environment import ssh_port
         port = ssh_port(self.cfg)
+        delay = 2.0
         while not self.stop.is_set():
+            if not self.key_path.is_file():
+                # Without the key every attempt is a wasted handshake.
+                self.report('Shared folder sync: no SSH key at ' + str(self.key_path))
+                self.stop.wait(RETRY_LIMIT)
+                continue
             try:
                 with socket.create_connection(('127.0.0.1', port), timeout=2):
                     pass
@@ -91,7 +111,8 @@ class SharedSync:
                 # a missing banner, the ssh client exits with code 255.
                 if 'banner' not in message.casefold() and 'code 255' not in message:
                     self.report(message)
-                self.stop.wait(2)
+                self.stop.wait(delay)
+                delay = min(delay * 2, RETRY_LIMIT)
         return None
 
     @staticmethod
@@ -104,8 +125,10 @@ class SharedSync:
             files[path.relative_to(root).as_posix()] = (int(status.st_mtime), status.st_size)
         return files
 
-    def sync_once(self, transport):
-        local = self.snapshot(self.local_root)
+    def sync_once(self, transport, local=None):
+        """One pass in both directions. True if anything was copied or deleted."""
+        local = self.snapshot(self.local_root) if local is None else local
+        before = dict(self.synced)
         # A failed listing raises: a partial one would look like deletions.
         remote = transport.listing()
         # A side that is suddenly empty (an unmounted or re-created folder)
@@ -146,6 +169,7 @@ class SharedSync:
                 # One file that cannot be copied (open in another program, a
                 # name Windows does not allow) must not stop the others.
                 self.report(f'Shared folder sync: {rel}: {error}')
+        return self.synced != before or local != self.snapshot(self.local_root)
 
     def safe_name(self, rel):
         parts = rel.split('/')

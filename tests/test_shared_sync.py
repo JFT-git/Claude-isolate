@@ -159,6 +159,53 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(list(self.host.iterdir()), [])
 
 
+class LoadTests(unittest.TestCase):
+    def test_idle_passes_report_no_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            guest = FolderTransport(base / 'guest')
+            guest.ensure_root()
+            sync = SharedSync({'disk': str(base / 'd.qcow2')}, base / 'key', local_root=base / 'host')
+            (base / 'host' / 'a.txt').write_text('a', encoding='utf-8')
+            self.assertTrue(sync.sync_once(guest))
+            self.assertFalse(sync.sync_once(guest))
+            self.assertFalse(sync.sync_once(guest))
+
+    def test_no_handshake_is_attempted_without_a_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            sync = SharedSync({'disk': str(base / 'd.qcow2')}, base / 'missing-key', local_root=base / 'host')
+            waits = []
+
+            def wait(seconds):
+                waits.append(seconds)
+                sync.stop.set()
+                return True
+            with patch.object(shared_sync, 'open_transport') as opened, \
+                 patch.object(sync.stop, 'wait', side_effect=wait), patch('builtins.print'):
+                self.assertIsNone(sync.connect())
+            opened.assert_not_called()
+            self.assertEqual(waits, [shared_sync.RETRY_LIMIT])
+
+    def test_failed_handshakes_back_off(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            (base / 'key').write_text('k', encoding='utf-8')
+            sync = SharedSync({'disk': str(base / 'd.qcow2')}, base / 'key', local_root=base / 'host')
+            waits = []
+
+            def wait(seconds):
+                waits.append(seconds)
+                if len(waits) == 7:
+                    sync.stop.set()
+                return sync.stop.is_set()
+            with patch.object(shared_sync.socket, 'create_connection'), \
+                 patch.object(shared_sync, 'open_transport', side_effect=OSError('Permission denied (publickey)')), \
+                 patch.object(sync.stop, 'wait', side_effect=wait), patch('builtins.print'):
+                sync.connect()
+            self.assertEqual(waits, [2, 4, 8, 16, 32, 60, 60])
+
+
 def gnu_tools():
     try:
         find = subprocess.run(['find', '.', '-maxdepth', '0', '-printf', ''], capture_output=True)
