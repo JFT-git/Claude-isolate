@@ -540,12 +540,11 @@ def work_directory(data, cfg):
 def qemu_argument_path(value):
     """Absolute path for a QEMU argument that is already safe to open.
 
-    A drive-letter path is kept as written. Resolving it would turn Q: back
-    into the user's real directory, or raise WinError 448.
+    A normal C:\\ path is resolved, so an 8.3 directory Windows created is
+    passed as its long name. A subst path such as Q:\\desktop.qcow2 is not
+    resolved back into a Cyrillic directory: if resolve() leaves ASCII, that
+    result is used, and if it becomes non-ASCII the original ASCII text stays.
     """
-    text = str(value)
-    if _is_drive_path(text):
-        return text.replace('/', '\\')
     raw = Path(value).expanduser()
     if not raw.is_absolute():
         import environment

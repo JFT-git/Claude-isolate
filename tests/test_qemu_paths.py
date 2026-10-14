@@ -193,8 +193,10 @@ class QemuAsciiPathTests(unittest.TestCase):
                  patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(public)}):
                 command = environment.command(cfg, check=False)
             self.assertEqual(Path(cfg['disk']).parent, data)
-            self.assertIn('desktop.qcow2', file_argument(command, 'desktop.qcow2'))
-            self.assertNotRegex(file_argument(command, 'desktop.qcow2'), r'^[A-Z]:\\')
+            disk = file_argument(command, 'desktop.qcow2').replace('/', '\\')
+            self.assertIn('desktop.qcow2', disk)
+            # A subst path is Q:\desktop.qcow2. The real profile path keeps its directories.
+            self.assertNotRegex(disk, r'^[A-Z]:\\desktop\.qcow2$')
             self.assertFalse(programdata.exists())
             self.assertFalse(public.exists())
             self.assertFalse(common.exists())
