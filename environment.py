@@ -146,6 +146,17 @@ def qemu_path(p):
 def command(cfg, check=True):
     arch = cfg['arch']
     system = platform.system()
+    if system == 'Windows':
+        # QEMU opens file arguments with the ANSI code page. Do this before any
+        # path is copied into argv, including a plan that never starts the VM.
+        from windows.qemu_paths import adopt_qemu_paths, app_directory, assert_qemu_argv, qemu_argument_path
+        adopt_qemu_paths(cfg)
+
+        def openable(value):
+            return qemu_argument_path(value)
+    else:
+        def openable(value):
+            return local_path(value)
     display = cfg.get('display', 'gtk') if system == 'Windows' else None
     # The hidden first-run boot has no window; the saved state still restores
     # into one because the display backend is not part of the guest hardware.
@@ -166,7 +177,7 @@ def command(cfg, check=True):
     whpx_cpu = cfg.get('whpx_cpu', 'qemu64')
     if whpx_cpu not in ('qemu64', 'Nehalem'):
         raise ValueError('Unsupported WHPX CPU model')
-    exe = str(local_path(cfg['qemu_executable'])) if cfg.get('qemu_executable') else (tool(f'qemu-system-{arch}') if check else f'qemu-system-{arch}')
+    exe = str(openable(cfg['qemu_executable'])) if cfg.get('qemu_executable') else (tool(f'qemu-system-{arch}') if check else f'qemu-system-{arch}')
     mode = cfg.get('network_mode', 'system')
     relay = ([sys.executable, 'relay'] if getattr(sys, 'frozen', False)
              else [sys.executable, str(ROOT / 'environment.py'), 'relay'])
@@ -191,8 +202,8 @@ def command(cfg, check=True):
            # advertises AMD SVM by default, even on an Intel WHPX host.
            '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else whpx_cpu + ',svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
-           '-drive', f'file={qemu_path(local_path(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,node-name=claude-disk',
-           '-drive', f'file={qemu_path(local_path(cfg["seed"]))},if=virtio,format=raw,readonly=on',
+           '-drive', f'file={qemu_path(openable(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,node-name=claude-disk',
+           '-drive', f'file={qemu_path(openable(cfg["seed"]))},if=virtio,format=raw,readonly=on',
            '-netdev', net, '-device', 'virtio-net-pci,netdev=isolated',
            '-device', 'virtio-gpu-pci,edid=off,xres=1920,yres=1200',
            '-device', 'qemu-xhci', '-device', 'usb-kbd',
@@ -203,10 +214,10 @@ def command(cfg, check=True):
     if system == 'Darwin':
         cmd += ['-display', 'cocoa,zoom-to-fit=on,zoom-interpolation=on,full-screen=on']
         if cfg.get('qemu_data_dir'):
-            cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
+            cmd += ['-L', str(openable(cfg['qemu_data_dir']))]
     elif system == 'Windows':
         if cfg.get('qemu_data_dir'):
-            cmd += ['-L', str(local_path(cfg['qemu_data_dir']))]
+            cmd += ['-L', str(openable(cfg['qemu_data_dir']))]
         cmd += ['-display', 'gtk,gl=off,zoom-to-fit=on' if display == 'gtk' else display]
         import uuid
         pipe = cfg.setdefault('qmp_pipe', 'claude-isolate-' + uuid.uuid4().hex)
@@ -220,23 +231,26 @@ def command(cfg, check=True):
         # QEMU's Windows pipe chardev blocks until a client connects and does
         # not reconnect. main() opens this clipboard pipe before wait_ready.
         # Shared folder on Windows: SFTP over localhost:2222 (bundled QEMU lacks virtfs).
-        (Path(cfg['disk']).parent / 'shared').mkdir(parents=True, exist_ok=True)
+        # It stays in the app data directory; QEMU never opens it.
+        (app_directory(cfg) / 'shared').mkdir(parents=True, exist_ok=True)
     if arch == 'aarch64':
-        firmware = local_path(cfg['firmware'])
+        firmware = openable(cfg['firmware'])
         if check and not firmware.is_file():
             raise RuntimeError('ARM64 firmware not found; set firmware in configuration')
         cmd += ['-bios', str(firmware)]
     if cfg.get('qmp_socket'):
         # Host-only control channel, never attached/mounted inside the guest.
-        cmd += ['-qmp', f'unix:{qemu_path(local_path(cfg["qmp_socket"]))},server=on,wait=off']
+        cmd += ['-qmp', f'unix:{qemu_path(openable(cfg["qmp_socket"]))},server=on,wait=off']
     if cfg.get('qmp_pipe'):
         if system != 'Windows' or not re.fullmatch(r'claude-isolate-[0-9a-f]{32}', cfg['qmp_pipe']):
             raise ValueError('Invalid Windows control pipe')
         cmd += ['-qmp', 'pipe:' + cfg['qmp_pipe']]
     if cfg.get('boot_log'):
-        cmd[cmd.index('-serial') + 1] = 'file:' + qemu_path(local_path(cfg['boot_log']))
+        cmd[cmd.index('-serial') + 1] = 'file:' + qemu_path(openable(cfg['boot_log']))
     # No SPICE agent, clipboard channel, host sockets, microphone, webcam,
     # USB passthrough or forwarded incoming ports beyond localhost:2222.
+    if system == 'Windows':
+        assert_qemu_argv(cmd)
     return cmd
 
 
@@ -595,7 +609,11 @@ def prepare(cfg, base, digest):
         (seed_dir / 'meta-data').write_text('instance-id: claude-isolation-v1\nlocal-hostname: isolated-desktop\n',
                                           encoding='utf-8', newline='\n')
         image_tool = tool('qemu-img')
-        subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(base), str(staged_disk)], check=True)
+        image_input = base
+        if platform.system() == 'Windows':
+            from windows.qemu_paths import input_for_qemu
+            image_input = input_for_qemu(base, cfg)
+        subprocess.run([image_tool, 'convert', '-f', 'qcow2', '-O', 'qcow2', str(image_input), str(staged_disk)], check=True)
         subprocess.run([image_tool, 'resize', str(staged_disk), '64G'], check=True)
         # Resizing leaves the backup GPT at the old end of the disk. A slow
         # emulated boot then misses LABEL=BOOT and LABEL=UEFI and waits in an
@@ -734,17 +752,29 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                         if status_path:
                             env['CLAUDE_NETWORK_REVOKE'] = str(Path(status_path).with_suffix('.revoked'))
                         env.pop('IPINFO_TOKEN', None)
-                        proc = subprocess.Popen(cmd, env=env)
+                        qemu_output = None
+                        output_handle = None
+                        if platform.system() == 'Windows':
+                            from windows.qemu_paths import app_directory
+                            qemu_output = app_directory(cfg) / 'qemu-host.log'
+                            qemu_output.parent.mkdir(parents=True, exist_ok=True)
+                            output_handle = qemu_output.open('wb')
+                        try:
+                            proc = subprocess.Popen(cmd, env=env, **(
+                                {'stdout': output_handle, 'stderr': subprocess.STDOUT} if output_handle else {}))
+                        finally:
+                            if output_handle is not None:
+                                output_handle.close()
                         try:
                             if platform.system() == 'Windows':
                                 from windows.serial_gateway import Gateway
                                 from windows.control import Control
-                                control = Control(cfg, proc, restore=restore)
+                                control = Control(cfg, proc, restore=restore, output_path=qemu_output)
                                 bridge = Gateway(cfg, env)
                                 from windows.clipboard_bridge import ClipboardBridge
                                 from windows.shared_sync import SharedSync
                                 clipboard = ClipboardBridge(cfg)
-                                shared = SharedSync(cfg, Path(cfg['disk']).parent / 'tools' / 'ssh_host_key')
+                                shared = SharedSync(cfg, app_directory(cfg) / 'tools' / 'ssh_host_key')
                                 control.on_event = bridge.port_event
                                 control.start()
                                 bridge.start()

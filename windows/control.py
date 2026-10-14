@@ -5,6 +5,7 @@ disconnected client. A private, session-bound JSON mailbox lets other launcher
 processes request only status and ACPI shutdown from this persistent owner.
 """
 import json
+import os
 from pathlib import Path
 import re
 import queue
@@ -19,6 +20,37 @@ from session_lock import exclusive
 from windows.pipe import NamedPipe
 
 COMMANDS = ('query-status', 'query-mice', 'system_powerdown', 'suspend')
+
+
+def qemu_output_text(path):
+    """QEMU writes its ANSI-code-page error to stderr. Show that text, not only a timeout."""
+    if not path:
+        return ''
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return ''
+    if not data:
+        return ''
+    encodings = ['utf-8']
+    if os.name == 'nt':
+        encodings.append('mbcs')
+    encodings.append('cp1251')
+    for encoding in encodings:
+        try:
+            return data.decode(encoding).strip()
+        except UnicodeDecodeError:
+            continue
+    return data.decode('utf-8', errors='replace').strip()
+
+
+def qemu_exit_message(code, path):
+    detail = qemu_output_text(path)
+    if len(detail) > 1800:
+        detail = detail[-1800:]
+    if detail:
+        return f'QEMU завершился с кодом {code}: {detail}'
+    return f'QEMU завершился с кодом {code} и не подготовил канал управления'
 
 
 def paths(cfg):
@@ -55,8 +87,9 @@ def request(cfg, execute, timeout=None):
 
 
 class Control:
-    def __init__(self, cfg, process, reader_factory=None, connector=None, restore=None):
+    def __init__(self, cfg, process, reader_factory=None, connector=None, restore=None, output_path=None):
         self.cfg, self.process = cfg, process
+        self.output_path = output_path
         # True to load the saved state into a QEMU started paused (-S).
         self.restore = restore
         self.restored = False
@@ -86,11 +119,21 @@ class Control:
         deadline = time.monotonic() + timeout
         while not self.ready.wait(.05):
             if self.process.poll() is not None:
+                if self.process.returncode:
+                    raise RuntimeError(qemu_exit_message(self.process.returncode, self.output_path))
                 return False
             if self.error:
                 raise RuntimeError('Не удалось открыть канал управления QEMU: ' + str(self.error))
             if time.monotonic() >= deadline:
-                raise RuntimeError('QEMU не подготовил канал управления вовремя')
+                if self.process.poll() is not None:
+                    if self.process.returncode:
+                        raise RuntimeError(qemu_exit_message(self.process.returncode, self.output_path))
+                    return False
+                detail = qemu_output_text(self.output_path)
+                message = 'QEMU не подготовил канал управления вовремя'
+                if detail:
+                    message += ': ' + (detail[-1800:] if len(detail) > 1800 else detail)
+                raise RuntimeError(message)
         return True
 
     def read_replies(self, pipe):

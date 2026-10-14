@@ -11,9 +11,10 @@ REMOTE_ROOT = '/home/claude/Shared'
 
 class SharedSync:
     def __init__(self, cfg, key_path):
+        from windows.qemu_paths import app_directory
         self.cfg = cfg
         self.key_path = Path(key_path)
-        self.local_root = Path(cfg['disk']).parent / 'shared'
+        self.local_root = app_directory(cfg) / 'shared'
         self.local_root.mkdir(parents=True, exist_ok=True)
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.run, daemon=True)
