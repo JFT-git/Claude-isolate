@@ -471,3 +471,45 @@ jobs:
           cd attach
           sha256sum --check ./*.sha256
           sh "$GITHUB_WORKSPACE/scripts/attach_release_assets.sh" "$RELEASE_TAG" ./*.zip ./*.sha256
+  warn-missing-arm:
+    name: Warn about missing ARM64 builds
+    # The release is published without waiting for ARM64. If any ARM64 build
+    # failed or was not attached, say so at the top of the release notes.
+    needs: [release, attach-guest-arm, attach-macos-arm, attach-portable-arm]
+    if: >-
+      always() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+      && needs.release.result == 'success'
+      && (needs.attach-guest-arm.result != 'success' || needs.attach-macos-arm.result != 'success' || needs.attach-portable-arm.result != 'success')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Add a warning to the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GUEST: ${{ needs.attach-guest-arm.result }}
+          MACOS: ${{ needs.attach-macos-arm.result }}
+          LINUX: ${{ needs.attach-portable-arm.result }}
+        run: |
+          missing=''
+          [ "$GUEST" = success ] || missing="$missing Claude-isolate-guest-aarch64.qcow2"
+          [ "$MACOS" = success ] || missing="$missing Claude-isolate-macos-arm64.zip"
+          [ "$LINUX" = success ] || missing="$missing Claude-isolate-linux-arm64.zip"
+          marker='<!-- arm64-missing -->'
+          gh release view "$RELEASE_TAG" --json body --jq .body > body.md
+          if grep -qF "$marker" body.md; then exit 0; fi
+          {
+            echo "$marker"
+            echo '> [!WARNING]'
+            echo '> **ARM64 builds are missing from this release: Apple Silicon Macs and Linux ARM64 are not supported by it.**'
+            echo '> **В этом релизе нет сборок ARM64: для Mac на Apple Silicon и Linux ARM64 используйте предыдущий релиз.**'
+            echo '>'
+            echo "> Missing / нет файлов:$(printf ' `%s`' $missing). CI: $RUN_URL"
+            echo
+            cat body.md
+          } > notes.md
+          gh release edit "$RELEASE_TAG" --notes-file notes.md
