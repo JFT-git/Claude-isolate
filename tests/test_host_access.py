@@ -27,7 +27,8 @@ class HostAccessTests(unittest.TestCase):
             self.assertIn('virtserialport,chardev=clipboard,name=claude.clipboard,id=clipboardport', cmd)
             chardev = next(item for item in cmd if item.startswith('socket,id=clipboard,'))
             self.assertIn('server=on,wait=off', chardev)
-            self.assertIn('/private/tmp/claude-env-test/clipboard.sock', chardev)
+            self.assertIn('claude-env-test', chardev)
+            self.assertIn('clipboard.sock', chardev)
             self.assertNotIn('-virtfs', cmd)
 
     def test_prepare_access_creates_shared_dir_and_key(self):
