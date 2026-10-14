@@ -15,7 +15,7 @@ if [ -f /etc/claude-preinstalled ]; then
   echo 'CLAUDE-ISOLATION: preinstalled-image no-package-downloads' > /dev/console
 else
 apt-get -o DPkg::Lock::Timeout=180 update
-apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils openssh-client xclip
+apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends xfce4-session xfce4-panel xfce4-settings xfwm4 xfdesktop4 thunar xfce4-terminal xfce4-xkb-plugin mousepad x11-xkb-utils x11-utils fonts-dejavu-core xserver-xorg-core xserver-xorg-input-libinput xinit dbus-user-session lightdm dbus-x11 nftables curl gnupg ca-certificates xdg-utils openssh-client openssh-server openssh-sftp-server xclip
 CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
 apt-get -o DPkg::Lock::Timeout=180 update
 apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends claude-desktop firefox
