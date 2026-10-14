@@ -109,7 +109,8 @@ def recover(data, cfg):
     journal_disk = Path(transaction['disk'])
     current_disk = Path(cfg['disk'])
     if journal_disk.resolve() != current_disk.resolve():
-        # 1.0.1 moves an existing disk to an ASCII path. The journal still names the old path.
+        # 1.0.1 moved a disk onto an ASCII path, and 1.0.2 moves one that landed in
+        # ProgramData. The journal still names the path from before that move.
         migrated = cfg.get('qemu_migrated_disk')
         if not (migrated and Path(migrated).resolve() == journal_disk.resolve() and current_disk.is_file()):
             raise RuntimeError('Незавершённое обновление относится к другому диску. Автоматический запуск отменён.')

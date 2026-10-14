@@ -21,7 +21,7 @@ import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}

@@ -2,6 +2,7 @@
 import codecs
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -9,6 +10,7 @@ from unittest.mock import Mock, patch
 import environment
 from windows import backend
 from windows.control import Control
+from windows.qemu_paths import stable_id
 
 
 def windows_config(data):
@@ -17,8 +19,30 @@ def windows_config(data):
     return cfg
 
 
+def link_directory(alias, target):
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        alias.symlink_to(target, target_is_directory=True)
+    except OSError:
+        if os.name != 'nt':
+            raise
+        result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(alias), str(target)],
+                                capture_output=True, text=True)
+        if result.returncode != 0 or not (alias.exists() or alias.is_symlink()):
+            raise OSError(result.stderr or result.stdout or 'junction failed')
+
+
+def assert_ascii_argv(test, argv):
+    for item in argv:
+        test.assertTrue(item.isascii(), item)
+        folded = item.replace('/', '\\').casefold()
+        test.assertNotIn('programdata', folded, item)
+        test.assertNotIn('program files', folded, item)
+        test.assertNotIn('александр', folded, item)
+
+
 class QemuAsciiPathTests(unittest.TestCase):
-    def test_cyrillic_data_directory_produces_an_ascii_qemu_argv(self):
+    def test_cyrillic_profile_uses_public_without_an_elevated_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / 'Александр' / 'Claude Isolate'
@@ -27,7 +51,11 @@ class QemuAsciiPathTests(unittest.TestCase):
             (install / 'share').mkdir(parents=True)
             (install / 'qemu-system-x86_64.exe').write_bytes(b'MZ')
             (install / 'share' / 'bios-256k.bin').write_bytes(b'bios')
+            public = root / 'Users' / 'Public'
+            public.mkdir(parents=True)
             programdata = root / 'ProgramData'
+            ascii_install = root / 'ASCIIInstall'
+            ascii_install.mkdir()
             cfg = windows_config(data)
             Path(cfg['disk']).write_bytes(b'user-disk')
             Path(cfg['seed']).write_bytes(b'user-seed')
@@ -35,14 +63,13 @@ class QemuAsciiPathTests(unittest.TestCase):
             cfg.update(qemu_executable=str(install / 'qemu-system-x86_64.exe'),
                        qemu_data_dir=str(install / 'share'))
             with patch.object(environment.platform, 'system', return_value='Windows'), \
-                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata),
+                 patch('windows.qemu_paths.windows_short_path', return_value=None), \
+                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(public),
                                          'LOCALAPPDATA': str(data.parent)}, clear=False):
                 command = environment.command(cfg, check=False)
                 again = environment.command(cfg, check=False)
             for argv in (command, again):
-                for item in argv:
-                    self.assertTrue(item.isascii(), item)
-                self.assertNotIn('Александр', '\n'.join(argv))
+                assert_ascii_argv(self, argv)
             drive = next(item for item in command if 'desktop.qcow2' in item)
             disk = Path(drive.split(',if=', 1)[0].removeprefix('file='))
             self.assertEqual(disk.read_bytes(), b'user-disk')
@@ -59,27 +86,101 @@ class QemuAsciiPathTests(unittest.TestCase):
             self.assertTrue((data / 'shared').is_dir())
             self.assertTrue(str(cfg['disk']).isascii())
             self.assertNotEqual(Path(cfg['disk']).parent.resolve(), data.resolve())
-            self.assertTrue(str(disk).startswith(str(programdata.resolve())) or programdata.resolve() in disk.resolve().parents)
+            host = public / 'ClaudeIsolate' / stable_id(data)
+            self.assertEqual(disk.resolve().parent, host.resolve())
+            self.assertEqual(host.parent.parent.resolve(), public.resolve())
+            self.assertFalse(programdata.exists())
+            self.assertFalse((ascii_install / 'ClaudeIsolate').exists())
+            self.assertGreaterEqual(len(Path(cfg['disk']).parts), 4)
 
-    def test_unwritable_programdata_uses_an_ascii_install_directory(self):
+    def test_cyrillic_profile_prefers_an_ascii_short_path(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / 'Александр' / 'Claude Isolate'
             data.mkdir(parents=True)
-            blocked = root / 'not-a-directory'
-            blocked.write_text('x', encoding='ascii')
-            install = root / 'ASCIIInstall'
+            install = data.parent / 'Programs' / 'Claude Isolate' / 'runtime' / 'qemu'
+            (install / 'share').mkdir(parents=True)
+            (install / 'qemu-system-x86_64.exe').write_bytes(b'MZ')
+            (install / 'share' / 'bios-256k.bin').write_bytes(b'bios')
+            alias = root / 'short' / 'ALEXAN~1' / 'CLAUDE~1'
+            link_directory(alias, data)
+            public = root / 'Users' / 'Public'
+            programdata = root / 'ProgramData'
             cfg = windows_config(data)
-            Path(cfg['disk']).write_bytes(b'disk')
-            Path(cfg['seed']).write_bytes(b'seed')
-            cfg['qemu_executable'] = r'C:\ASCIIInstall\qemu-system-x86_64.exe'
+            Path(cfg['disk']).write_bytes(b'user-disk')
+            Path(cfg['seed']).write_bytes(b'user-seed')
+            original_disk = Path(cfg['disk'])
+            cfg.update(qemu_executable=str(install / 'qemu-system-x86_64.exe'),
+                       qemu_data_dir=str(install / 'share'))
             with patch.object(environment.platform, 'system', return_value='Windows'), \
-                 patch.dict(os.environ, {'PROGRAMDATA': str(blocked), 'LOCALAPPDATA': str(data.parent)}), \
-                 patch('windows.qemu_paths.default_install_dir', return_value=install):
+                 patch('windows.qemu_paths.windows_short_path', return_value=alias), \
+                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(public)}, clear=False):
                 command = environment.command(cfg, check=False)
-            for item in command:
-                self.assertTrue(item.isascii(), item)
-            self.assertIn(str(install.resolve()), str(Path(cfg['disk']).resolve()))
+            assert_ascii_argv(self, command)
+            drive = next(item for item in command if 'desktop.qcow2' in item)
+            disk = Path(drive.split(',if=', 1)[0].removeprefix('file='))
+            self.assertEqual(disk.read_bytes(), b'user-disk')
+            self.assertTrue(original_disk.is_file())
+            self.assertEqual(original_disk.read_bytes(), b'user-disk')
+            self.assertEqual(disk.resolve(), original_disk.resolve())
+            self.assertTrue(str(disk).isascii())
+            self.assertFalse(public.exists())
+            self.assertFalse(programdata.exists())
+            firmware = Path(command[command.index('-L') + 1])
+            self.assertEqual((firmware / 'bios-256k.bin').read_bytes(), b'bios')
+            self.assertTrue(str(firmware).isascii())
+
+    def test_short_path_replaces_only_the_cyrillic_user_name(self):
+        from windows.qemu_paths import windows_short_path
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            profile = root / 'Александр'
+            data = profile / 'Claude Isolate'
+            data.mkdir(parents=True)
+            link_directory(root / 'ALEXAN~1', profile)
+
+            def fake_short(path):
+                if Path(path).name == 'Александр':
+                    return str(root / 'ALEXAN~1')
+                return None
+
+            with patch('windows.qemu_paths._get_short_path', side_effect=fake_short):
+                short = windows_short_path(data)
+            self.assertIsNotNone(short)
+            self.assertTrue(str(short).isascii(), short)
+            self.assertEqual(short.resolve(), data.resolve())
+            self.assertEqual(short.name, 'Claude Isolate')
+            self.assertIn('ALEXAN~1', short.parts)
+
+    def test_programdata_disk_migrates_to_public(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data = root / 'Александр' / 'Claude Isolate'
+            data.mkdir(parents=True)
+            public = root / 'Users' / 'Public'
+            public.mkdir(parents=True)
+            programdata = root / 'ProgramData'
+            legacy = programdata / 'ClaudeIsolate' / stable_id(data)
+            legacy.mkdir(parents=True)
+            (legacy / 'desktop.qcow2').write_bytes(b'from-programdata')
+            (legacy / 'seed.iso').write_bytes(b'legacy-seed')
+            (legacy / 'state.json').write_text('{"disk":"programdata"}', encoding='utf-8')
+            cfg = windows_config(data)
+            cfg.update(disk=str(legacy / 'desktop.qcow2'), seed=str(legacy / 'seed.iso'),
+                       boot_log=str(legacy / 'boot.log'),
+                       qemu_executable=r'C:\ASCII\qemu-system-x86_64.exe')
+            with patch.object(environment.platform, 'system', return_value='Windows'), \
+                 patch('windows.qemu_paths.windows_short_path', return_value=None), \
+                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(public)}, clear=False):
+                command = environment.command(cfg, check=False)
+            assert_ascii_argv(self, command)
+            disk = Path(cfg['disk'])
+            self.assertEqual(disk.read_bytes(), b'from-programdata')
+            self.assertEqual(disk.parent.resolve(), (public / 'ClaudeIsolate' / stable_id(data)).resolve())
+            self.assertFalse((legacy / 'desktop.qcow2').exists())
+            self.assertEqual(Path(cfg['seed']).read_bytes(), b'legacy-seed')
+            self.assertEqual((disk.parent / 'state.json').read_text(encoding='utf-8'), '{"disk":"programdata"}')
+            self.assertNotIn(programdata.resolve(), disk.resolve().parents)
 
     def test_no_ascii_directory_refuses_to_pass_the_profile_path(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -88,28 +189,33 @@ class QemuAsciiPathTests(unittest.TestCase):
             data.mkdir(parents=True)
             blocked = root / 'not-a-directory'
             blocked.write_text('x', encoding='ascii')
+            programdata = root / 'ProgramData'
             cfg = windows_config(data)
             Path(cfg['disk']).write_bytes(b'disk')
             Path(cfg['seed']).write_bytes(b'seed')
             with patch.object(environment.platform, 'system', return_value='Windows'), \
-                 patch.dict(os.environ, {'PROGRAMDATA': str(blocked), 'LOCALAPPDATA': str(data.parent)}), \
-                 patch('windows.qemu_paths.default_install_dir', return_value=data.parent):
+                 patch('windows.qemu_paths.windows_short_path', return_value=None), \
+                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(blocked),
+                                         'LOCALAPPDATA': str(data.parent)}):
                 with self.assertRaisesRegex(RuntimeError, 'нелатинск'):
                     environment.command(cfg, check=False)
             self.assertTrue(Path(cfg['disk']).name == 'desktop.qcow2')
             self.assertIn('Александр', str(cfg['disk']))
+            self.assertFalse(programdata.exists())
 
     def test_ascii_profile_keeps_its_own_disk(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             data = root / 'Claude Isolate'
             programdata = root / 'ProgramData'
+            public = root / 'Users' / 'Public'
             cfg = windows_config(data)
             with patch.object(environment.platform, 'system', return_value='Windows'), \
-                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata)}):
+                 patch.dict(os.environ, {'PROGRAMDATA': str(programdata), 'PUBLIC': str(public)}):
                 environment.command(cfg, check=False)
             self.assertEqual(Path(cfg['disk']).parent, data)
             self.assertFalse(programdata.exists())
+            self.assertFalse(public.exists())
 
     def test_immediate_qemu_exit_reports_stderr_instead_of_the_timeout(self):
         with tempfile.TemporaryDirectory() as temporary:
