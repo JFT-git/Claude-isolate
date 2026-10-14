@@ -7,7 +7,8 @@
 # on prepare, SSH, or the guest. It never stops Chrome, Firefox, Edge, or
 # any other user browser, and it never uses virtfs (Windows QEMU has it
 # disabled). Shared files are checked through the app's SFTP sync on
-# 127.0.0.1:2222.
+# 127.0.0.1:<ssh_port> (2222 unless the launcher had to choose another port;
+# it saves the port as ssh_port in environment.json).
 #
 # Paths match the app, but this script never uses the existing profile:
 #   data     C:\ClaudeIsolateTest\e2e-data   (not %LOCALAPPDATA%\Claude Isolate)
@@ -96,6 +97,12 @@ function Read-GuestConfig {
 function Get-DiskPath($Config) {
     if ($Config -and $Config.disk) { return [string]$Config.disk }
     return Join-Path $Data 'desktop.qcow2'
+}
+
+function Get-SshPort {
+    $config = Read-GuestConfig
+    if ($config -and $config.ssh_port) { return [int]$config.ssh_port }
+    return 2222
 }
 
 function Get-SharedDir($Config) {
@@ -191,10 +198,12 @@ function Test-FastStartSnapshot([string]$QemuImg, $Config) {
     return [bool]($info.Text -match '"name"\s*:\s*"claude-fast-start"')
 }
 
-function Wait-LocalPort([int]$Port, [int]$TimeoutSec, $Process) {
+function Wait-LocalPort([int]$TimeoutSec, $Process) {
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while ((Get-Date) -lt $deadline) {
         if ($Process -and $Process.HasExited) { return 'exited' }
+        # The launcher may move SSH off a busy port when it starts.
+        $Port = Get-SshPort
         $client = New-Object System.Net.Sockets.TcpClient
         try {
             $wait = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
@@ -218,7 +227,7 @@ function Get-SshExe {
 
 function Invoke-GuestSsh([string]$SshExe, [string]$Key, [string]$KnownHosts, [string]$Remote, [int]$TimeoutSec) {
     $args = @(
-        '-p', '2222',
+        '-p', [string](Get-SshPort),
         '-i', $Key,
         '-o', 'BatchMode=yes',
         '-o', 'IdentitiesOnly=yes',
@@ -470,7 +479,7 @@ if (-not (Test-Path -LiteralPath $disk)) {
     if ($pubLine -notlike 'ssh-ed25519 *') {
         $sshDetail = "public key at $pub is not ssh-ed25519"
     } else {
-        $port = Wait-LocalPort 2222 2 $null
+        $port = Wait-LocalPort 2 $null
         if ($port -ne 'open') {
             $startLog = Join-Path $Data 'e2e-start.log'
             [System.IO.File]::WriteAllText($startLog, '')
@@ -481,11 +490,11 @@ if (-not (Test-Path -LiteralPath $disk)) {
             } catch {
                 $sshDetail = "could not release the start gate. $($_.Exception.Message)"
             }
-            $port = Wait-LocalPort 2222 $BootTimeoutSec $guest
+            $port = Wait-LocalPort $BootTimeoutSec $guest
             if ($port -eq 'exited') {
                 $sshDetail = "guest launcher exited {0}. {1}" -f $guest.ExitCode, (Get-LogTail $startLog)
             } elseif ($port -eq 'timeout') {
-                $sshDetail = "127.0.0.1:2222 did not open within ${BootTimeoutSec}s. $(Get-LogTail $startLog)"
+                $sshDetail = "127.0.0.1:$(Get-SshPort) did not open within ${BootTimeoutSec}s. $(Get-LogTail $startLog)"
             }
         }
         if (-not $sshDetail) {
@@ -500,9 +509,9 @@ if (-not (Test-Path -LiteralPath $disk)) {
             } while ((Get-Date) -lt $probeDeadline)
             if ($probe.Code -eq 0 -and (Test-OutputLine $probe.Text 'claude-isolate-e2e-ok')) {
                 $sshReady = $true
-                Write-Result 'PASS' 'ssh' "ssh -p 2222 -i $key claude@127.0.0.1"
+                Write-Result 'PASS' 'ssh' "ssh -p $(Get-SshPort) -i $key claude@127.0.0.1"
             } else {
-                $sshDetail = ("ssh -p 2222 failed ({0}). {1}" -f $probe.Code, ([string]$probe.Text).Trim())
+                $sshDetail = ("ssh -p {0} failed ({1}). {2}" -f (Get-SshPort), $probe.Code, ([string]$probe.Text).Trim())
             }
         }
     }
@@ -521,14 +530,14 @@ if (-not $fastSnapshot) {
 } elseif ($startText -match ('\u0411\u044b\u0441\u0442\u0440\u044b\u0439 \u0437\u0430\u043f\u0443\u0441\u043a \u043d\u0435 \u0443\u0434\u0430\u043b\u0441\u044f')) {
     Write-Result 'FAIL' 'fast-start' 'restore fell back to a full boot'
 } elseif ($sshReady) {
-    Write-Result 'PASS' 'fast-start' 'snapshot restored and SSH answered on 127.0.0.1:2222'
+    Write-Result 'PASS' 'fast-start' "snapshot restored and SSH answered on 127.0.0.1:$(Get-SshPort)"
 } else {
     Write-Result 'FAIL' 'fast-start' 'snapshot exists but the restored guest did not accept SSH'
 }
 
 $shared = Get-SharedDir $config
 if (-not $sshReady) {
-    Write-Result 'SKIP' 'shared' 'guest SSH on 127.0.0.1:2222 is not up; SFTP sync was not checked'
+    Write-Result 'SKIP' 'shared' "guest SSH on 127.0.0.1:$(Get-SshPort) is not up; SFTP sync was not checked"
 } else {
     New-Item -ItemType Directory -Force -Path $shared | Out-Null
     $stamp = [guid]::NewGuid().ToString('n')
@@ -558,7 +567,7 @@ if (-not $sshReady) {
     Remove-Item -LiteralPath $guestFile -ErrorAction SilentlyContinue
     Invoke-GuestSsh $ssh $key $knownHosts "rm -f /home/claude/Shared/$hostName /home/claude/Shared/$guestName" 20 | Out-Null
     if ($toGuest -and $toHost) {
-        Write-Result 'PASS' 'shared' "both ways $shared <-> /home/claude/Shared over SFTP 127.0.0.1:2222"
+        Write-Result 'PASS' 'shared' "both ways $shared <-> /home/claude/Shared over SFTP 127.0.0.1:$(Get-SshPort)"
     } elseif (-not $toGuest) {
         Write-Result 'FAIL' 'shared' 'host file did not appear in /home/claude/Shared via SFTP sync'
     } else {

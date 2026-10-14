@@ -215,6 +215,32 @@ def _logical_letters():
     return {chr(ord('A') + index) for index in range(26) if mask & (1 << index)}
 
 
+def _remembered_network_letters():
+    """Letters of the user's saved network drives, even while disconnected.
+
+    A laptop away from the office does not list its mapped Z: as a logical
+    drive. Taking that letter would make Windows fail to reconnect the share.
+    """
+    if os.name != 'nt':
+        return set()
+    import winreg
+    letters = set()
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, 'Network') as key:
+            index = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(key, index)
+                except OSError:
+                    break
+                if len(name) == 1 and name.isalpha():
+                    letters.add(name.upper())
+                index += 1
+    except OSError:
+        pass
+    return letters
+
+
 def _query_target(letter):
     if os.name != 'nt':
         return None
@@ -278,7 +304,7 @@ def assign_drive(target, preferred=None):
     try:
         if preferred and _targets_match(_query_target(preferred), target):
             return preferred
-        used = set(_logical_letters())
+        used = set(_logical_letters()) | _remembered_network_letters()
         for letter in _LETTER_ORDER:
             if _query_target(letter):
                 used.add(letter)

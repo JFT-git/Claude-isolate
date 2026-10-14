@@ -107,7 +107,8 @@ def http_headers(header, authority):
 
 
 def load_config(path):
-    cfg = json.loads(Path(path).read_text(encoding='utf-8'))
+    # A Windows reader must not stop the launcher replacing the file.
+    cfg = json.loads(network_guard.read_text(path))
     if cfg['arch'] not in ('aarch64', 'x86_64'):
         raise ValueError('arch must be aarch64 or x86_64')
     mode = cfg.setdefault('network_mode', 'system')
@@ -121,10 +122,77 @@ def load_config(path):
     fields = [('memory_mb', 1024, 65536), ('cpus', 1, 32)]
     if mode == 'proxy':
         fields.append(('proxy_port', 1, 65535))
+    if 'ssh_port' in cfg:
+        fields.append(('ssh_port', 1024, 65535))
     for key, minimum, maximum in fields:
         if type(cfg[key]) is not int or not minimum <= cfg[key] <= maximum:
             raise ValueError(f'Invalid {key}')
     return cfg
+
+
+def save_config(path, cfg):
+    network_guard.write_state(path, cfg, indent=2, durable=True)
+
+
+DEFAULT_SSH_PORT = 2222
+
+
+def ssh_port(cfg):
+    """Host port QEMU forwards to the guest's sshd; bound to 127.0.0.1 only."""
+    return cfg.get('ssh_port', DEFAULT_SSH_PORT)
+
+
+def port_available(port):
+    """True if QEMU can listen on 127.0.0.1:port right now.
+
+    Hyper-V, WSL and Docker reserve TCP ranges on Windows that often include
+    2222, and another VM may already listen there. A bind is refused in both
+    cases, and QEMU would then exit before the guest starts.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        if os.name != 'nt':
+            # Ignore our own previous session's TIME_WAIT connections; a
+            # listening socket still makes the bind fail.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(('127.0.0.1', port))
+            return True
+        except OSError as error:
+            if os.name != 'nt' or getattr(error, 'winerror', None) == 10013:
+                return False  # WSAEACCES: a reserved (excluded) port range.
+    # Windows also refuses the bind while connections of the previous session
+    # wait in TIME_WAIT; QEMU binds with SO_REUSEADDR and succeeds then. Only
+    # a program that actually listens there makes the port unusable.
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=1):
+            return False
+    except ConnectionRefusedError:
+        return True
+    except OSError:
+        return False
+
+
+def choose_ssh_port(cfg):
+    """Keep the current SSH port if it is free; otherwise pick another one.
+
+    Returns True when cfg changed and should be saved.
+    """
+    current = ssh_port(cfg)
+    if port_available(current):
+        return False
+    for candidate in [DEFAULT_SSH_PORT, *range(2223, 2300)]:
+        if candidate != current and port_available(candidate):
+            cfg['ssh_port'] = candidate
+            return True
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(('127.0.0.1', 0))
+        cfg['ssh_port'] = probe.getsockname()[1]
+    return True
+
+
+def kvm_usable():
+    """Linux can use KVM only with read-write access to /dev/kvm."""
+    return os.access('/dev/kvm', os.R_OK | os.W_OK)
 
 
 def tool(name):
@@ -167,6 +235,10 @@ def command(cfg, check=True):
     native = (platform.machine().lower() in ('arm64', 'aarch64')) == (arch == 'aarch64')
     accel = ('hvf' if system == 'Darwin' else 'kvm' if system == 'Linux'
              else 'whpx') if native else 'tcg'
+    if accel == 'kvm' and not kvm_usable():
+        # A VM without nested virtualization, WSL, or a user outside the kvm
+        # group: QEMU would exit at once. Software emulation still works.
+        accel = 'tcg'
     if arch == 'aarch64' and system == 'Windows':
         accel = 'tcg'
     if system == 'Windows' and cfg.get('accelerator'):
@@ -192,13 +264,16 @@ def command(cfg, check=True):
     relay_cmd = shlex.join(relay)
     net = ('user,id=isolated,restrict=on,ipv6=off,'
            'guestfwd=tcp:10.0.2.100:7890-cmd:' + relay_cmd.replace(',', ',,'))
+    port = ssh_port(cfg)
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise ValueError('Invalid ssh_port')
     if system == 'Windows':
         # hostfwd binds to localhost only: the host can SSH into the guest,
         # but no other machine on the network can reach it.
-        net = 'user,id=isolated,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22'
+        net = f'user,id=isolated,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:{port}-:22'
     else:
         # Same localhost-only SSH forward, alongside the existing guestfwd relay.
-        net += ',hostfwd=tcp:127.0.0.1:2222-:22'
+        net += f',hostfwd=tcp:127.0.0.1:{port}-:22'
     cmd = [exe, '-name', 'Claude isolated desktop', '-nodefaults',
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
@@ -259,7 +334,7 @@ def command(cfg, check=True):
     if cfg.get('boot_log'):
         cmd[cmd.index('-serial') + 1] = 'file:' + qemu_path(openable(cfg['boot_log']))
     # No SPICE agent, clipboard channel, host sockets, microphone, webcam,
-    # USB passthrough or forwarded incoming ports beyond localhost:2222.
+    # USB passthrough or forwarded incoming ports beyond the localhost SSH port.
     if system == 'Windows':
         assert_qemu_argv(cmd)
     return cmd
@@ -663,6 +738,29 @@ class RestoreFailed(RuntimeError):
     """A saved guest state could not be loaded; a normal boot may follow."""
 
 
+class QemuFailed(subprocess.CalledProcessError):
+    """QEMU exited on its own with an error. detail is what QEMU printed."""
+
+    def __init__(self, returncode, cmd, detail=''):
+        super().__init__(returncode, cmd, output=detail)
+        self.detail = detail or ''
+        self.initial_exit_ip = None
+        self.network_locked = False
+
+    def __str__(self):
+        code = self.returncode
+        shown = f'0x{code & 0xffffffff:08X}' if code < 0 or code > 255 else str(code)
+        detail = self.detail[-1800:].strip()
+        return f'QEMU завершился с кодом {shown}' + (': ' + detail if detail else '.')
+
+
+def qemu_detail(output_path):
+    if not output_path or platform.system() != 'Windows':
+        return ''
+    from windows.control import qemu_output_text
+    return qemu_output_text(output_path)
+
+
 class LaunchAbandoned(RuntimeError):
     """The owner of this process asked it to stop the guest it started."""
 
@@ -699,6 +797,12 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                 raise ValueError('--base and --sha256 are required')
             prepare(cfg, args.base, args.sha256)
         else:
+            previous_port = ssh_port(cfg)
+            if args.action == 'start' and choose_ssh_port(cfg):
+                save_config(args.config, cfg)
+                print(json.dumps({'message': f'Порт {previous_port} занят другой программой или зарезервирован системой. '
+                                  f'SSH и общая папка используют порт {cfg["ssh_port"]}.',
+                                  'ssh_port': cfg['ssh_port']}, ensure_ascii=False), flush=True)
             cmd = command(cfg)
             if cfg['network_mode'] == 'proxy':
                 check_proxy(cfg['proxy_port'])
@@ -793,6 +897,10 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 bridge.start()
                                 clipboard.start()
                                 shared.start()
+                                if os.environ.get('CLAUDE_HEADLESS') != '1' and cfg.get('window', 'maximized') == 'maximized':
+                                    from windows.window import maximize_when_shown
+                                    threading.Thread(target=maximize_when_shown, args=(proc.pid, stop),
+                                                     daemon=True).start()
                                 control.wait_ready()
                             else:
                                 from host_access import UnixClipboard, clipboard_socket
@@ -817,13 +925,13 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                     if ABORT.is_set():
                                         raise LaunchAbandoned('Запуск Linux прерван')
                             if proc.returncode:
-                                error = subprocess.CalledProcessError(proc.returncode, cmd)
-                                error.initial_exit_ip = result['ip'] if result else None
-                                error.network_locked = lease.with_suffix('.revoked').exists()
-                                raise error
+                                raise QemuFailed(proc.returncode, cmd, qemu_detail(qemu_output))
                             if control and control.suspended:
                                 saved_state.record(cfg, cmd)
                         except BaseException as error:
+                            # Before terminate(): on Windows a terminated
+                            # process also reports exit code 1.
+                            exited = proc.poll()
                             proc.terminate()
                             try:
                                 proc.wait(timeout=5)
@@ -834,6 +942,17 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 print('Restore failed: ' + type(error).__name__ + ': ' + str(error),
                                       file=sys.stderr, flush=True)
                                 raise RestoreFailed('Сохранённое состояние Linux не загрузилось') from error
+                            if exited and not isinstance(error, (QemuFailed, KeyboardInterrupt, LaunchAbandoned)):
+                                # QEMU died while the control channel was still
+                                # starting (an accelerator or argument error).
+                                # Report what QEMU said, as a QEMU failure.
+                                failure = QemuFailed(exited, cmd, qemu_detail(qemu_output))
+                                failure.__cause__ = error
+                                error = failure
+                            if isinstance(error, (QemuFailed, LaunchAbandoned)):
+                                error.initial_exit_ip = result['ip'] if result else None
+                                error.network_locked = lease.with_suffix('.revoked').exists()
+                                raise error
                             raise
                     finally:
                         network_guard.revoke(lease, status_path, 'Среда остановлена')

@@ -9,7 +9,6 @@ import re
 import shutil
 import sys
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -21,7 +20,7 @@ import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '1.0.6'
+VERSION = '1.0.7'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
@@ -32,15 +31,10 @@ def emit(message, **fields):
 
 
 def write_config(path, cfg):
-    fd, temporary = tempfile.mkstemp(prefix='.config-', dir=path.parent)
-    try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as output:
-            json.dump(cfg, output, ensure_ascii=False, indent=2)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    # The launcher window reads this file twice a second. A plain os.replace
+    # fails with "access denied" while any reader (or an antivirus) has it
+    # open; write_state replaces it atomically and retries.
+    environment.save_config(path, cfg)
 
 
 def host_memory():
@@ -213,6 +207,65 @@ def select_acceleration(cfg):
     return 'tcg' if cfg.get('whpx_failed') else acceleration()
 
 
+WHPX_MARKERS = ('whpx', 'whv', 'hypervisor', 'гипервизор')
+# A WHPX guest prints its kernel banner on the serial console within seconds.
+# Some hosts report WHPX as available, yet the guest never gets past the
+# firmware. No serial output at all for this long means it is stuck.
+WHPX_STALL_SECONDS = 240
+
+
+def whpx_failure(error):
+    """True if a QEMU failure looks like the hypervisor, not a setting.
+
+    QEMU exits with code 1 for argument and file errors (for example a port it
+    cannot listen on); those must not switch the user to slow emulation for
+    good. A crash code, no explanation at all, or a message about WHPX does.
+    """
+    detail = (getattr(error, 'detail', '') or '').casefold()
+    return error.returncode != 1 or not detail or any(marker in detail for marker in WHPX_MARKERS)
+
+
+class StallWatch:
+    """Abandon a WHPX launch whose guest prints nothing on the serial console."""
+
+    def __init__(self, cfg, timeout=WHPX_STALL_SECONDS, poll=1.0):
+        self.cfg, self.timeout, self.poll = cfg, timeout, poll
+        self.stalled = False
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *details):
+        self.done.set()
+        self.thread.join(timeout=5)
+
+    def run(self):
+        from windows.control import paths as control_paths
+        ready_file = control_paths(self.cfg)['ready']
+        since = None
+        while not self.done.wait(self.poll):
+            try:
+                ready = network_guard.read_state(ready_file)
+            except (OSError, ValueError):
+                ready = None
+            if not isinstance(ready, dict) or not ready.get('ready'):
+                since = None
+                continue
+            if ready.get('restored'):
+                return  # A restored guest does not boot; its serial log stays empty.
+            if since is None:
+                since = time.monotonic()
+            if boot_text(self.cfg['boot_log'], 4096).strip():
+                return
+            if time.monotonic() - since > self.timeout:
+                self.stalled = True
+                environment.ABORT.set()
+                return
+
+
 def start_environment(path, cfg, offline=False):
     cfg['accelerator'] = select_acceleration(cfg)
     cfg['whpx_cpu'] = whpx_cpu() if os.name == 'nt' else 'qemu64'
@@ -220,35 +273,73 @@ def start_environment(path, cfg, offline=False):
     if not offline:
         emit('Проверяю подключение и запускаю Linux…', accelerator=cfg['accelerator'])
     sys.argv = [sys.argv[0], 'start', '--config', str(path)]
+    automatic = cfg['accelerator'] == 'whpx' and cfg.get('acceleration_mode', 'auto') == 'auto'
     started = time.monotonic()
+    watch = None
+
+    def launch():
+        nonlocal watch
+        if not automatic:
+            environment.main(raise_errors=True, offline=offline)
+            return
+        watch = StallWatch(cfg)
+        try:
+            with watch:
+                environment.main(raise_errors=True, offline=offline)
+        finally:
+            if watch.stalled:
+                # Only this watch set it; a retry must not be abandoned too.
+                environment.ABORT.clear()
+
     try:
         try:
-            environment.main(raise_errors=True, offline=offline)
+            launch()
         except environment.RestoreFailed:
             from windows import state
             state.discard(cfg)
             emit('Быстрый запуск не удался. Запускаю Linux обычным способом; диск и файлы сохранены.',
                  running=False)
             started = time.monotonic()
-            environment.main(raise_errors=True, offline=offline)
+            launch()
+    except environment.LaunchAbandoned as error:
+        if not (watch and watch.stalled):
+            raise
+        if getattr(error, 'network_locked', False):
+            raise RuntimeError('Сеть была заблокирована во время запуска. '
+                               'Автоматический перезапуск отменён; проверьте VPN и перезапустите среду вручную.') from error
+        fallback(path, cfg, 'Linux не загружается с аппаратным ускорением Windows (WHPX)', 'stall')
+        environment.main(raise_errors=True, expected_exit_ip=getattr(error, 'initial_exit_ip', None),
+                         offline=offline)
     except subprocess.CalledProcessError as error:
         # environment has already reaped QEMU, closed the private SSH bridge,
         # revoked the lease and released the disk lock before we retry.
-        if (cfg['accelerator'] != 'whpx' or cfg.get('acceleration_mode', 'auto') != 'auto'
-                or time.monotonic() - started > 180):
+        if not automatic or time.monotonic() - started > 180 or not whpx_failure(error):
             raise
-        if error.network_locked:
+        if getattr(error, 'network_locked', False):
             raise RuntimeError('Сеть была заблокирована во время запуска. '
                                'Автоматический перезапуск отменён; проверьте VPN и перезапустите среду вручную.') from error
-        cfg.update(accelerator='tcg', whpx_failed=True,
-                   whpx_failure_code=error.returncode)
-        write_config(path, cfg)
-        emit('Аппаратное ускорение Windows завершилось с ошибкой '
-             f'0x{error.returncode & 0xffffffff:08X}. Перехожу на совместимый режим; '
-             'он медленнее. Диск Linux сохранён.', accelerator='tcg', running=False)
+        detail = (getattr(error, 'detail', '') or '').strip().splitlines()
+        fallback(path, cfg, 'Аппаратное ускорение Windows завершилось с ошибкой '
+                 f'0x{error.returncode & 0xffffffff:08X}' + (' (' + detail[-1][:300] + ')' if detail else ''),
+                 error.returncode)
         # A fresh lease must still use the original verified exit IP. An
         # automatic recovery never silently accepts a VPN/exit change.
-        environment.main(raise_errors=True, expected_exit_ip=error.initial_exit_ip, offline=offline)
+        environment.main(raise_errors=True, expected_exit_ip=getattr(error, 'initial_exit_ip', None),
+                         offline=offline)
+
+
+def fallback(path, cfg, reason, code):
+    """Remember that WHPX failed on this PC and use software emulation."""
+    try:
+        # The launch may have saved settings (such as the SSH port) since.
+        current = environment.load_config(path)
+    except (OSError, ValueError, KeyError):
+        current = dict(cfg)
+    cfg.clear()
+    cfg.update(current, accelerator='tcg', whpx_failed=True, whpx_failure_code=code)
+    write_config(path, cfg)
+    emit(reason + '. Перехожу на совместимый режим; он медленнее. Диск Linux сохранён. '
+         'Аппаратный режим можно снова выбрать в настройках «Запуск».', accelerator='tcg', running=False)
 
 
 PREBOOT_TIMEOUT = 1800
