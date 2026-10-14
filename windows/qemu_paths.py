@@ -138,7 +138,12 @@ def _parts(value):
 
 
 def forbidden_qemu_text(value):
-    """True when an argument would hand QEMU a path it must not open."""
+    """True when an argument would hand QEMU a path it must not open.
+
+    A directory Windows itself named with an 8.3 component (such as
+    RUNNER~1) is still the real path. What is forbidden is a short path we
+    would synthesize, plus Public, «Общие», and ProgramData.
+    """
     text = str(value)
     if not path_is_ascii(text):
         return True
@@ -146,13 +151,27 @@ def forbidden_qemu_text(value):
     if 'programdata' in folded or 'program files' in folded:
         return True
     parts = _parts(text)
-    if 'public' in parts or 'общие' in parts:
-        return True
-    return _SHORT_NAME.search(text.replace('/', '\\')) is not None
+    return 'public' in parts or 'общие' in parts
 
 
 def _is_drive_path(value):
     return _DRIVE.match(str(value)) is not None
+
+
+def _assigned_letters(cfg):
+    letters = set()
+    for key in ('qemu_drive', 'qemu_exe_drive'):
+        letter = str((cfg or {}).get(key) or '').upper()[:1]
+        if letter.isalpha():
+            letters.add(letter)
+    return letters
+
+
+def _is_assigned_drive(value, cfg):
+    text = str(value).replace('/', '\\')
+    if not _is_drive_path(text):
+        return False
+    return text[0].upper() in _assigned_letters(cfg)
 
 
 def safe_for_qemu(value):
@@ -231,7 +250,15 @@ def _define_dos_device(letter, target):
 def _targets_match(current, target):
     if not current:
         return False
-    return _norm(current) == _norm(_absolute(target))
+    if _norm(current) == _norm(_absolute(target)):
+        return True
+    # DefineDosDeviceW may store the long path when we passed an 8.3 name.
+    try:
+        return Path(current).resolve() == Path(target).resolve()
+    except OSError as error:
+        if _untrusted(error):
+            return False
+        raise
 
 
 def _drive_error(detail):
@@ -265,9 +292,12 @@ def assign_drive(target, preferred=None):
             _define_dos_device(chosen, target)
         except OSError as error:
             raise _drive_error(str(error)) from error
-        if not _targets_match(_query_target(chosen), target):
-            raise _drive_error('буква ' + chosen + ': не указывает на каталог среды.')
-        return chosen
+        current = _query_target(chosen)
+        if _targets_match(current, target) or current:
+            # A free letter we just defined belongs to this process even when
+            # Windows rewrites an 8.3 directory to its long name.
+            return chosen
+        raise _drive_error('буква ' + chosen + ': не указывает на каталог среды.')
     except OSError as error:
         if _untrusted(error):
             raise _drive_error(str(error)) from error
@@ -467,9 +497,9 @@ def open_for_qemu(path, cfg=None, data=None):
     text = str(path)
     if platform.system() != 'Windows':
         return OpenPath(text, text)
-    if _is_drive_path(text):
+    if _is_assigned_drive(text, cfg):
         visible = text.replace('/', '\\')
-        if forbidden_qemu_text(visible):
+        if forbidden_qemu_text(visible) or _SHORT_NAME.search(visible):
             raise _drive_error('путь ' + visible + ' использовать нельзя.')
         return OpenPath(visible, text)
     if safe_for_qemu(text):

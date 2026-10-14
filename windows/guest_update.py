@@ -120,7 +120,7 @@ def recover(data, cfg):
     from windows.qemu_paths import paths_match
     if not paths_match(journal_disk, current_disk):
         # Older builds moved the disk onto an ASCII path or into ProgramData.
-        # 1.0.3 keeps it in the user profile and opens it by a drive letter.
+        # Later builds keep it in the user profile and open it by a drive letter.
         migrated = cfg.get('qemu_migrated_disk')
         try:
             current_exists = current_disk.is_file()
