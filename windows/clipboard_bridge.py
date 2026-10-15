@@ -48,6 +48,11 @@ class ClipboardBridge:
             if not pipe:
                 return
             carry = b''
+            # Reading the clipboard opens it (blocking other programs for that
+            # moment) and converts an image to PNG. Do it only after Windows
+            # reports a change, not three times a second.
+            seen = None
+            checked = 0.0
             while not self.stop.is_set() and not pipe.closed:
                 try:
                     if pipe.peek():
@@ -62,6 +67,12 @@ class ClipboardBridge:
                             else:
                                 self.set_png(payload)
                                 self.last_png = hashlib.sha256(payload).hexdigest()
+                    sequence = self.sequence()
+                    now = time.monotonic()
+                    # 0: no access to the sequence number; fall back to a slow poll.
+                    if (sequence == seen and sequence) or (not sequence and now - checked < 2):
+                        continue
+                    seen, checked = sequence, now
                     text = self.get_text()
                     if text:
                         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
@@ -80,7 +91,8 @@ class ClipboardBridge:
                     # A Win32 clipboard failure must not close the pipe. QEMU's
                     # Windows chardev does not reconnect, and a closed pipe stalls it.
                     print('Windows clipboard bridge: ' + str(error), file=sys.stderr, flush=True)
-                self.stop.wait(.3)
+                finally:
+                    self.stop.wait(.3)
         except Exception as error:
             print('Windows clipboard bridge: ' + str(error), file=sys.stderr, flush=True)
         finally:
@@ -91,6 +103,16 @@ class ClipboardBridge:
     def write_all(pipe, data):
         while data and not pipe.closed:
             data = data[pipe.write(data):]
+
+    def sequence(self):
+        """Windows' clipboard change counter; 0 when it is not available."""
+        try:
+            function = ctypes.WinDLL('user32').GetClipboardSequenceNumber
+            function.argtypes = []
+            function.restype = ctypes.c_uint32
+            return function()
+        except (OSError, AttributeError):
+            return 0
 
     @staticmethod
     def user32():

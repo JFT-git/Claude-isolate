@@ -9,6 +9,7 @@ one side while the VM runs is deleted on the other side too, unless it was
 changed there meanwhile. Deletions are not remembered between sessions: a
 re-created guest with an empty folder must never wipe the host's files.
 """
+import logging
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,12 @@ import sys
 import tempfile
 import threading
 import time
+
+# paramiko logs a traceback for every connection refused while the guest's
+# sshd starts (and the gateway's own session ends). Both callers report
+# failures themselves, once; keep those tracebacks out of launcher.log.
+logging.getLogger('paramiko').addHandler(logging.NullHandler())
+logging.getLogger('paramiko').propagate = False
 
 REMOTE_ROOT = '/home/claude/Shared'
 PARTIAL = '.claude-partial'
@@ -108,8 +115,10 @@ class SharedSync:
             except Exception as error:
                 message = 'Shared folder sync connect: ' + type(error).__name__ + ': ' + str(error)
                 # sshd is not up yet while a slow guest boots: paramiko reports
-                # a missing banner, the ssh client exits with code 255.
-                if 'banner' not in message.casefold() and 'code 255' not in message:
+                # a missing banner, the ssh client a reset or code 255.
+                transient = ('banner', 'code 255', 'kex_exchange_identification', 'connection reset',
+                             'connection refused', 'connection closed')
+                if not any(text in message.casefold() for text in transient):
                     self.report(message)
                 self.stop.wait(delay)
                 delay = min(delay * 2, RETRY_LIMIT)

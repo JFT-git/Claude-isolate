@@ -474,7 +474,8 @@ class WindowsBackendTests(unittest.TestCase):
             self.assertEqual(cfg['qemu_data_dir'], str(runtime / 'qemu/share'))
 
     def test_automatic_resources_reserve_host_memory_and_handle_small_cpu(self):
-        for total, available, cpus, expected in ((16384, 10000, 8, (3072, 2)),
+        for total, available, cpus, expected in ((16384, 10000, 8, (3072, 4)), (16384, 10000, 32, (3072, 4)),
+                                                (16384, 10000, 4, (3072, 2)),
                                                 (8192, 3584, 2, (2560, 1)),
                                                 (4096, 3072, 1, (2048, 1))):
             with patch.object(backend, 'host_memory', return_value=(total, available)), \

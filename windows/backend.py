@@ -20,7 +20,7 @@ import release_image
 from session_lock import exclusive
 from windows import gnupg
 
-VERSION = '1.0.7'
+VERSION = '1.0.8'
 GUEST_GATEWAY_VERSION = 2
 ACCELERATION_MODES = ('auto', 'tcg', 'whpx')
 RESOURCE_PROFILES = {'minimal': (1024, 1), 'economy': (3072, 2), 'standard': (6144, 4)}
@@ -60,7 +60,10 @@ def automatic_resources():
     # guest and warn; Windows/QEMU decide whether allocation can succeed.
     budget = min(3072, memory[0] // 2, memory[1] - 1024) if memory else 3072
     allocated = max(1024, budget // 256 * 256)
-    cpus = 1 if allocated < 2048 else min(2, max(1, (os.cpu_count() or 2) - 1))
+    # Half the host's logical CPUs, at most four: under software emulation
+    # each virtual CPU is a host thread, and Claude, Firefox and the desktop
+    # keep several busy. The other half stays with Windows and QEMU itself.
+    cpus = 1 if allocated < 2048 else min(4, max(1, (os.cpu_count() or 2) // 2))
     return dict(memory_mb=allocated, cpus=cpus)
 
 
@@ -475,6 +478,35 @@ def qmp(cfg, execute):
     return request(cfg, execute)
 
 
+_boot_cache = {}
+
+
+def boot_tail(path):
+    """The last 256 KB of the boot log, raw and without colours.
+
+    The window asks every second; read and clean the file again only after
+    it changed, instead of competing with the emulated guest for the CPU.
+    """
+    try:
+        info = os.stat(path)
+        signature = (info.st_size, info.st_mtime_ns)
+    except OSError:
+        return '', ''
+    cached = _boot_cache.get(path)
+    if cached and cached[0] == signature:
+        return cached[1], cached[2]
+    try:
+        with Path(path).open('rb') as source:
+            source.seek(max(0, info.st_size - 262144))
+            boot = source.read(262144).decode('utf-8', errors='replace')
+    except OSError:
+        return '', ''
+    plain = ANSI.sub('', boot)
+    _boot_cache.clear()
+    _boot_cache[path] = (signature, boot, plain)
+    return boot, plain
+
+
 def status(cfg, running=False):
     from windows import state as saved_state
     from windows.control import paths as control_paths
@@ -490,16 +522,9 @@ def status(cfg, running=False):
         restored = bool(network_guard.read_state(control_paths(cfg)['ready']).get('restored'))
     except (OSError, ValueError, AttributeError):
         restored = False
-    try:
-        with Path(cfg['boot_log']).open('rb') as source:
-            source.seek(0, os.SEEK_END)
-            source.seek(max(0, source.tell() - 262144))
-            boot = source.read().decode('utf-8', errors='replace')
-    except OSError:
-        boot = ''
+    boot, plain_boot = boot_tail(cfg['boot_log'])
     # The installation marker is emitted only on the first boot. Later boots
     # already have the desktop and must not show installation indefinitely.
-    plain_boot = re.sub(r'\x1b\[[0-9;]*m', '', boot)
     # A restored guest does not boot, so its serial log stays empty.
     desktop_ready = (restored or 'CLAUDE-ISOLATION: desktop-ready' in plain_boot
                      or 'Started lightdm.service - Light Display Manager.' in plain_boot)

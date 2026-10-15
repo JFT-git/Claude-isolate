@@ -109,7 +109,8 @@ class MainWindow(QMainWindow):
         self._load_config()
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll)
-        self._poll_timer.start(500)
+        # Once a second is enough for status text; polling competes with QEMU.
+        self._poll_timer.start(1000)
 
     def _build_ui(self):
         central = QWidget()
@@ -357,9 +358,11 @@ class MainWindow(QMainWindow):
                 'могут занимать больше времени. VPN должен оставаться включён.')
             if self.acceleration.currentIndex() == 0:
                 self.memory_note.setText(
-                    'Необязательно: компонент Windows «Платформа низкоуровневой '
-                    'оболочки Windows» и перезагрузка ускоряют Linux в несколько раз. '
-                    'Без него всё работает.')
+                    'Linux работает в программной эмуляции, поэтому ввод может '
+                    'отставать. Компонент Windows «Платформа низкоуровневой '
+                    'оболочки Windows» ускоряет Linux в несколько раз: Win+R → '
+                    'optionalfeatures → отметьте его → перезагрузка (нужны права '
+                    'администратора). Без него всё тоже работает.')
 
     def set_resources(self):
         if self.task:
