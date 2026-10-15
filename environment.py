@@ -19,6 +19,7 @@ import threading
 import tempfile
 import time
 import network_guard
+from guest_disk import KERNEL_ARGS
 from session_lock import exclusive
 from route_guard import RouteWatcher
 from network_transport import open_public, public_address
@@ -371,6 +372,10 @@ WantedBy=multi-user.target
         file('/usr/local/sbin/claude-clipboard-bridge', (ROOT / 'guest/clipboard-bridge.py').read_text(), '0700'),
         file('/etc/ssh/sshd_config.d/50-claude-isolate.conf', '''PermitRootLogin no
 PubkeyAuthentication yes
+# The host's key also lives outside /home: an offline image update may write
+# /etc but never a profile, and a guest set up by an old version never got
+# ~/.ssh/authorized_keys from cloud-init.
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/claude-isolate-keys/%u
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 ChallengeResponseAuthentication no
@@ -409,6 +414,10 @@ RestartSec=3
 WantedBy=graphical.target
 '''),
         file('/usr/local/bin/claude-isolated', (ROOT / 'guest/launch.sh').read_text(), '0755'),
+        # Kept on every later update-grub (kernel updates); see guest_disk.KERNEL_ARGS.
+        file('/etc/default/grub.d/99-claude-isolate.cfg',
+             '# Claude Isolate: a fast clock and a reliable timer under software emulation.\n'
+             'GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT ' + ' '.join(KERNEL_ARGS) + '"\n'),
         file('/usr/local/sbin/claude-display-install', (ROOT / 'guest/display-setup.sh').read_text(), '0700'),
         file('/etc/lightdm/lightdm.conf.d/50-isolated.conf',
              '[Seat:*]\nautologin-user=claude\nautologin-user-timeout=0\nuser-session=xfce\n'),
@@ -420,6 +429,8 @@ WantedBy=graphical.target
              'Acquire::https::Proxy "http://10.0.2.100:7890";\n'
              'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n'),
         ]
+    if cfg.get('ssh_pubkey'):
+        files.append(file('/etc/ssh/claude-isolate-keys/claude', cfg['ssh_pubkey'].strip() + '\n'))
     data = dict(hostname='isolated-desktop', manage_etc_hosts=True,
                 disable_root=True, ssh_pwauth=False,
                 users=[{'name': 'claude', 'gecos': 'Desktop user',
@@ -573,7 +584,7 @@ def relay_stream(read, write, port, mode, web_access, lease):
         finished = threading.Event()
         def watch_lease():
             while not finished.wait(network_guard.RELAY_INTERVAL):
-                if not network_guard.permitted(lease):
+                if not network_guard.permitted_now(lease):
                     try:
                         active.shutdown(socket.SHUT_RDWR)
                     except OSError:
@@ -584,7 +595,7 @@ def relay_stream(read, write, port, mode, web_access, lease):
             try:
                 while True:
                     chunk = read(65536)
-                    if not chunk or not network_guard.permitted(lease):
+                    if not chunk or not network_guard.permitted_now(lease):
                         break
                     active.sendall(chunk)
                 active.shutdown(socket.SHUT_WR)
@@ -597,7 +608,7 @@ def relay_stream(read, write, port, mode, web_access, lease):
                 write(early)
             while True:
                 chunk = active.recv(65536)
-                if not chunk or not network_guard.permitted(lease):
+                if not chunk or not network_guard.permitted_now(lease):
                     break
                 write(chunk)
         finally:
@@ -619,7 +630,7 @@ def prime_system_tunnel(read, sock, lease, hostname, port):
     deadline = time.monotonic() + 60
     payload = b''
     while time.monotonic() < deadline:
-        if not network_guard.permitted(lease):
+        if not network_guard.permitted_now(lease):
             return None, b''
         if sock is not None:
             try:

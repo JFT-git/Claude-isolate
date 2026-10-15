@@ -84,8 +84,59 @@ def apply(root, payload):
         link.parent.mkdir(parents=True, exist_ok=True)
         if not link.is_symlink():
             link.symlink_to(expected)
+    patch_bootloader(root, payload.get('kernel_args', ()))
     if hasattr(os, 'sync'):
         os.sync()
+
+
+CONSOLE = 'console=tty1 console=ttyS0'
+
+
+def add_kernel_args(text, args):
+    """Same rule as guest_disk.add_kernel_args on the host; idempotent."""
+    out = []
+    for line in text.splitlines(keepends=True):
+        found = line.find(CONSOLE)
+        if found >= 0:
+            end = found + len(CONSOLE)
+            present = line[end:].split()
+            missing = [arg for arg in args if arg not in present]
+            if missing:
+                line = line[:end] + ''.join(' ' + arg for arg in missing) + line[end:]
+        out.append(line)
+    return ''.join(out)
+
+
+def patch_bootloader(root, args):
+    """Add kernel options to the guest's /boot/grub/grub.cfg when /boot is mounted.
+
+    The maintenance helper mounts the guest's BOOT partition with a real ext4
+    driver, so its journal is replayed first. The options take effect on the
+    guest's next boot; /etc/default/grub.d keeps them on later update-grub runs.
+    """
+    if not args or not all(isinstance(arg, str) and arg.replace('=', '').replace('_', '').isalnum() for arg in args):
+        return False
+    # A separate BOOT partition is mounted on /boot by the helper; without one
+    # grub.cfg is on the root file system. Both were mounted by a real kernel.
+    boot = root / 'boot'
+    grub = boot / 'grub/grub.cfg'
+    if any(path.is_symlink() for path in (boot, grub.parent, grub)) or not grub.is_file():
+        return False
+    text = grub.read_text(encoding='utf-8')
+    updated = add_kernel_args(text, args)
+    if updated == text:
+        return False
+    fd, temporary = tempfile.mkstemp(prefix='.claude-update-', dir=grub.parent)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8', newline='') as output:
+            output.write(updated)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(temporary, grub.stat().st_mode & 0o777)
+        os.replace(temporary, grub)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return True
 
 
 if __name__ == '__main__':

@@ -19,7 +19,9 @@ from session_lock import exclusive
 from windows.serial_gateway import guest_files as gateway_files
 
 # Guest payload revision is independent of controller-only releases.
-REVISION = '0.4.2'
+# 0.4.3: TSC clock and no_timer_check on existing disks, event-driven
+# clipboard bridge, snapd and its helpers masked.
+REVISION = '0.4.3'
 IDLE_SERVICE = '[Service]\nNice=19\nCPUSchedulingPolicy=idle\nIOSchedulingClass=idle\n'
 
 
@@ -64,9 +66,11 @@ def payload(cfg):
         files.append(item)
     files.append(dict(path='/etc/nftables.conf',
                       content=(environment.ROOT / 'guest/firewall.nft').read_text(), permissions='0600'))
+    from guest_disk import KERNEL_ARGS
     return dict(files=files, enable=[(unit, 'multi-user.target') for unit in (
         'claude-gateway.service', 'claude-environment-update.service', 'claude-setup.service')]
-        + [('claude-desktop-ready.service', 'graphical.target')])
+        + [('claude-desktop-ready.service', 'graphical.target')],
+        kernel_args=list(KERNEL_ARGS))
 
 
 def image_tool(cfg):
@@ -270,7 +274,8 @@ def maintenance(cfg, base, directory, content):
     # An offline helper has no NIC, host mounts, gateway, clipboard, or account
     # credentials. It mounts ONLY the old guest root identified on /dev/vdb.
     script = ('#!/bin/sh\nset -eu\n'
-              'finish() { sync; umount /target 2>/dev/null || true; systemctl --no-block poweroff; }; trap finish EXIT\n'
+              'finish() { sync; umount /target/boot 2>/dev/null || true; umount /target 2>/dev/null || true; '
+              'systemctl --no-block poweroff; }; trap finish EXIT\n'
               'count=0; target=; while [ -z "$target" ]; do\n'
               '  for part in /dev/vdb[0-9]*; do\n'
               '    [ -b "$part" ] || continue\n'
@@ -282,8 +287,21 @@ def maintenance(cfg, base, directory, content):
               'done\n'
               'test "$(blkid -s TYPE -o value "$target")" = ext4\n'
               'mkdir /target; mount -t ext4 -o nodev,nosuid,noexec "$target" /target\n'
+              # The guest's own BOOT partition holds grub.cfg. A real ext4 mount
+              # replays its journal before offline-update.py edits the file.
+              'boot=; for part in /dev/vdb[0-9]*; do\n'
+              '  [ -b "$part" ] || continue\n'
+              '  if [ "$(blkid -s LABEL -o value "$part")" = BOOT ] && [ "$(blkid -s TYPE -o value "$part")" = ext4 ]; then\n'
+              '    test -z "$boot"; boot="$part"\n'
+              '  fi\n'
+              'done\n'
+              'if [ -n "$boot" ] && [ -d /target/boot ] && [ ! -L /target/boot ]; then\n'
+              # Not fatal: without it only the kernel options wait for the
+              # guest's own update-grub (/etc/default/grub.d).
+              '  mount -t ext4 -o nodev,nosuid,noexec "$boot" /target/boot || true\n'
+              'fi\n'
               'python3 /offline-update.py /target /payload.json\n'
-              'sync; umount /target\n'
+              'sync; umount /target/boot 2>/dev/null || true; umount /target\n'
               'echo "' + marker + '" > /dev/console\n')
     data = dict(hostname='isolated-maintenance', users=[], package_update=False,
                 growpart=dict(mode='off'), resize_rootfs=False,

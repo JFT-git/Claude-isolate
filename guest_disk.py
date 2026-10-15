@@ -52,40 +52,44 @@ def _apply_checksum(uuid, inum, inode):
 
 
 _TIMER_ARG = 'console=tty1 console=ttyS0'
-_TIMER_ADDED = _TIMER_ARG + ' no_timer_check'
+# no_timer_check: TCG sometimes delivers the PIT interrupt after the kernel's
+# IO-APIC timer probe gives up, and the kernel panics with "IO-APIC + timer
+# doesn't work"; the option leaves the APIC enabled and only skips the probe.
+# tsc=reliable: under software emulation the kernel's TSC warp test fails and
+# it falls back to the emulated HPET. Every clock read then becomes a system
+# call plus an emulated device access under QEMU's global lock; a Chromium
+# based app reads the clock tens of thousands of times a second, which made
+# typing lag by seconds. QEMU's TSC follows the host clock and is monotonic.
+KERNEL_ARGS = ('no_timer_check', 'tsc=reliable')
 
 
-def add_slow_timer_arg(text):
-    """Skip the kernel's IO-APIC timer probe on a slow software CPU.
+def add_kernel_args(text, args=KERNEL_ARGS):
+    """Add the missing args after each "console=tty1 console=ttyS0" kernel command line.
 
-    TCG sometimes delivers the PIT interrupt after that probe gives up, and
-    the kernel panics with "IO-APIC + timer doesn't work". no_timer_check
-    leaves the APIC enabled and only skips the probe.
+    Idempotent. Lines without that console pair (other entries, comments) are
+    left unchanged. guest/offline-update.py applies the same rule in a guest.
     """
     binary = isinstance(text, (bytes, bytearray))
     data = text.decode('utf-8') if binary else text
-    if _TIMER_ARG not in data:
+    out = []
+    for line in data.splitlines(keepends=True):
+        found = line.find(_TIMER_ARG)
+        if found >= 0:
+            end = found + len(_TIMER_ARG)
+            present = line[end:].split()
+            missing = [arg for arg in args if arg not in present]
+            if missing:
+                line = line[:end] + ''.join(' ' + arg for arg in missing) + line[end:]
+        out.append(line)
+    updated = ''.join(out)
+    if updated == data:
         return text
-    pieces = []
-    start = 0
-    changed = False
-    while True:
-        found = data.find(_TIMER_ARG, start)
-        if found < 0:
-            pieces.append(data[start:])
-            break
-        pieces.append(data[start:found])
-        end = found + len(_TIMER_ARG)
-        if data.startswith(' no_timer_check', end):
-            pieces.append(data[found:end])
-        else:
-            pieces.append(_TIMER_ADDED)
-            changed = True
-        start = end
-    if not changed:
-        return text
-    updated = ''.join(pieces)
     return updated.encode() if binary else updated
+
+
+def add_slow_timer_arg(text):
+    """Backward-compatible name for add_kernel_args."""
+    return add_kernel_args(text)
 
 
 def rewrite_fstab(text):
@@ -426,7 +430,7 @@ def _grub_files(image, fs):
 
 
 def allow_slow_ioapic(path):
-    """Add no_timer_check to the guest bootloader config when it fits in place."""
+    """Add KERNEL_ARGS to the guest bootloader config when it fits in place."""
     try:
         image = _Qcow(path)
     except (OSError, ValueError, struct.error):
@@ -452,14 +456,14 @@ def allow_slow_ioapic(path):
                     continue
                 encoded = updated.encode()
                 if len(encoded) > capacity:
-                    print('Guest disk: bootloader config has no room for no_timer_check', flush=True)
+                    print('Guest disk: bootloader config has no room for the kernel options', flush=True)
                     continue
                 image.write(filesystem['start'] + extents[0][2] * filesystem['block'], encoded)
                 struct.pack_into('<I', inode, 4, len(encoded))
                 _apply_checksum(filesystem['uuid'], number, inode)
                 image.write(inode_at, inode)
                 changed = True
-                print('Guest disk: added no_timer_check to', file_path.decode('utf-8', 'replace'), flush=True)
+                print('Guest disk: added', ' '.join(KERNEL_ARGS), 'to', file_path.decode('utf-8', 'replace'), flush=True)
         if changed:
             image.flush()
         return changed
@@ -480,7 +484,7 @@ def prepare_disk(path):
     if relaxed:
         print('Guest disk: BOOT and UEFI mounts wait longer and are not fatal', flush=True)
     if timer:
-        print('Guest disk: kernel skips the slow emulated IO-APIC timer test', flush=True)
+        print('Guest disk: kernel skips the emulated IO-APIC timer test and keeps the fast TSC clock', flush=True)
     return repaired or relaxed or timer
 
 
