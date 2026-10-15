@@ -236,6 +236,29 @@ def permitted(path, now=None):
         return False
 
 
+# Relay loops ask on every chunk and every RELAY_INTERVAL for each open
+# connection. A browser keeps dozens open, and each answer is several file
+# system calls (on Windows, also an antivirus scan of the open). Share one
+# answer for a moment instead; a revoked or expired lease still closes every
+# connection within LEASE_CHECK_CACHE + RELAY_INTERVAL.
+LEASE_CHECK_CACHE = .05
+_lease_answers = {}
+_lease_lock = threading.Lock()
+
+
+def permitted_now(path):
+    """permitted(path), shared across connections for LEASE_CHECK_CACHE seconds."""
+    now = time.monotonic()
+    with _lease_lock:
+        cached = _lease_answers.get(path)
+    if cached is not None and 0 <= now - cached[0] < LEASE_CHECK_CACHE:
+        return cached[1]
+    answer = permitted(path)
+    with _lease_lock:
+        _lease_answers[path] = (now, answer)
+    return answer
+
+
 def revoke(lease, status_path=None, reason='Сеть закрыта до перезапуска среды.'):
     # One-way marker wins over any concurrent successful geolocation response.
     for path in (lease, status_path):

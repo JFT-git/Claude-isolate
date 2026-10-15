@@ -1,9 +1,17 @@
 """PNG and Windows DIB conversion for the clipboard bridge.
 
 Stdlib only, so the host can exchange images with xclip without Pillow.
+Pixels are reordered with slice assignments, which run in C: a per-pixel
+Python loop took seconds for one screenshot and held the interpreter lock
+that the network gateway threads need.
 """
 import struct
 import zlib
+
+# PNG from the host goes over a local pipe; a fast level is enough.
+COMPRESSION = 6
+# A DIB alpha of 0 usually means "no alpha channel": show those pixels opaque.
+_OPAQUE_ZERO = bytes([255]) + bytes(range(1, 256))
 
 
 def _chunk(tag, data):
@@ -14,7 +22,16 @@ def encode_png(width, height, rows):
     """Encode top-down RGBA rows as an 8-bit PNG."""
     raw = b''.join(b'\x00' + row for row in rows)
     ihdr = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
-    return b'\x89PNG\r\n\x1a\n' + _chunk(b'IHDR', ihdr) + _chunk(b'IDAT', zlib.compress(raw, 9)) + _chunk(b'IEND', b'')
+    return (b'\x89PNG\r\n\x1a\n' + _chunk(b'IHDR', ihdr)
+            + _chunk(b'IDAT', zlib.compress(raw, COMPRESSION)) + _chunk(b'IEND', b''))
+
+
+def _swap_red_blue(pixels):
+    """RGBA <-> BGRA for 4-byte pixels."""
+    out = bytearray(pixels)
+    out[0::4] = pixels[2::4]
+    out[2::4] = pixels[0::4]
+    return out
 
 
 def _paeth(left, up, up_left):
@@ -38,6 +55,15 @@ def _unfilter(data, width, bpp):
         index += 1
         row = bytearray(data[index:index + stride])
         index += stride
+        if kind == 0:
+            rows.append(bytes(row))
+            previous = row
+            continue
+        if kind == 2:
+            row = bytearray((value + above) & 255 for value, above in zip(row, previous))
+            rows.append(bytes(row))
+            previous = row
+            continue
         for column in range(stride):
             left = row[column - bpp] if column >= bpp else 0
             up = previous[column]
@@ -91,8 +117,12 @@ def decode_png(png):
     if len(rows) != height:
         raise ValueError('PNG height does not match scanlines')
     if color == 2:
-        rows = [b''.join(bytes((row[i], row[i + 1], row[i + 2], 255))
-                         for i in range(0, len(row), 3)) for row in rows]
+        expanded = []
+        for row in rows:
+            rgba = bytearray(b'\xff' * (width * 4))
+            rgba[0::4], rgba[1::4], rgba[2::4] = row[0::3], row[1::3], row[2::3]
+            expanded.append(bytes(rgba))
+        rows = expanded
     return width, height, rows
 
 
@@ -101,12 +131,7 @@ def png_to_dib(png):
     width, height, rows = decode_png(png)
     header = struct.pack('<IiiHHIIiiII', 40, width, height, 1, 32, 0,
                          width * height * 4, 0, 0, 0, 0)
-    pixels = bytearray()
-    for row in reversed(rows):
-        for index in range(0, len(row), 4):
-            red, green, blue, alpha = row[index:index + 4]
-            pixels += bytes((blue, green, red, alpha))
-    return header + bytes(pixels)
+    return header + bytes(_swap_red_blue(b''.join(reversed(rows))))
 
 
 def dib_to_png(dib):
@@ -131,14 +156,11 @@ def dib_to_png(dib):
     for row_index in range(height):
         source = row_index if top_down else height - 1 - row_index
         pixel = dib[offset + source * stride:offset + source * stride + width * channels]
-        rgba = bytearray()
         if channels == 4:
-            for index in range(0, len(pixel), 4):
-                blue, green, red, alpha = pixel[index:index + 4]
-                rgba += bytes((red, green, blue, 255 if alpha == 0 else alpha))
+            rgba = _swap_red_blue(pixel)
+            rgba[3::4] = pixel[3::4].translate(_OPAQUE_ZERO)
         else:
-            for index in range(0, len(pixel), 3):
-                blue, green, red = pixel[index:index + 3]
-                rgba += bytes((red, green, blue, 255))
+            rgba = bytearray(b'\xff' * (width * 4))
+            rgba[0::4], rgba[1::4], rgba[2::4] = pixel[2::3], pixel[1::3], pixel[0::3]
         rows.append(bytes(rgba))
     return encode_png(width, height, rows)
