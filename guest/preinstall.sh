@@ -47,5 +47,5 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/claude-debs /tmp/claude-repositories.sh /tmp/claude-packages.txt /tmp/claude-quiet-units.txt
 systemctl mask lightdm.service ssh.service ssh.socket apt-daily.timer apt-daily-upgrade.timer
 # Firefox and Claude use signed DEB packages, so the cloud image's Snap/LXD
-# bootstrap and network entropy client are unnecessary background work.
-systemctl mask snapd.service snapd.socket snapd.seeded.service lxd-installer.socket pollinate.service
+# bootstrap and network entropy client are unnecessary background work. They
+# are in quiet-units.txt (masked above), so guests updated offline lose them too.

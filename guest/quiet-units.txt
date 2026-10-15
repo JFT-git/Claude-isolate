@@ -23,3 +23,9 @@ dpkg-db-backup.timer
 ua-timer.timer
 ubuntu-advantage.service
 grub-common.service
+snapd.service
+snapd.socket
+snapd.seeded.service
+snapd.apparmor.service
+lxd-installer.socket
+pollinate.service
