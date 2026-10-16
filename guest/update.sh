@@ -9,6 +9,12 @@ if [ "${1:-}" != '--installed' ]; then
     trap 'code=$?; if [ "$code" -ne 0 ]; then echo "CLAUDE-ISOLATION: update-retrying exit=$code" > /dev/console; fi' EXIT
     export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l
     nft -f /etc/claude-isolation.nft
+    # preinstall.sh masks ssh; bootstrap.sh unmasks it only since 0.4.2, so
+    # guests prepared by 0.3.16-0.4.1 had no SSH server and no shared folder.
+    # Before any download, so a failed apt run cannot leave it masked.
+    systemctl unmask ssh.service ssh.socket 2>/dev/null || true
+    systemctl enable ssh.service ssh.socket 2>/dev/null || true
+    systemctl start ssh.socket 2>/dev/null || true
     CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
     apt-get -o DPkg::Lock::Timeout=180 update
     apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef \
