@@ -110,10 +110,16 @@ class GuestUpdateTests(unittest.TestCase):
 
     def test_update_installs_packages_that_host_channels_need(self):
         # Images up to 0.4.1 had neither the SSH server (shared folder) nor xclip (clipboard bridge).
+        # They are installed before the large desktop and browser downloads,
+        # which a slow gateway can stretch beyond one 30-minute attempt.
         script = (environment.ROOT / 'guest/update.sh').read_text()
-        command = script[script.index('install -y'):script.index('apt-get clean')].split()
+        first = script.index('install -y')
+        second = script.index('install -y', first + 1)
+        command = script[first:second].split()
         for package in ('openssh-server', 'openssh-sftp-server', 'xclip'):
             self.assertIn(package, command)
+        self.assertNotIn('claude-desktop', command)
+        self.assertIn('claude-desktop', script[second:script.index('apt-get clean')].split())
 
     def test_update_enables_every_unit_it_installs(self):
         # Guests prepared before 0.4.2 never ran the runcmd that enables the clipboard bridge.
