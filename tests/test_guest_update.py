@@ -108,6 +108,19 @@ class GuestUpdateTests(unittest.TestCase):
                         'systemctl enable ssh.service ssh.socket', 'systemctl reset-failed ssh.service ssh.socket'):
             self.assertLess(script.index(command), start)
 
+    def test_update_enables_every_unit_it_installs(self):
+        # Guests prepared before 0.4.2 never ran the runcmd that enables the clipboard bridge.
+        with tempfile.TemporaryDirectory() as temporary:
+            _, cfg = backend.config(Path(temporary) / 'controller')
+            update = guest_update.payload(cfg)
+        installed = {}
+        for item in update['files']:
+            for line in item['content'].splitlines():
+                if item['path'].startswith('/etc/systemd/system/') and line.startswith('WantedBy='):
+                    installed[item['path'].rsplit('/', 1)[1]] = line.split('=', 1)[1]
+        self.assertIn('claude-clipboard-bridge.service', installed)
+        self.assertEqual(installed, dict(update['enable']))
+
     def transaction(self, temporary):
         data = Path(temporary)
         path, cfg = backend.config(data)
