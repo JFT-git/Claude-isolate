@@ -72,16 +72,32 @@ for url in http://127.0.0.1 http://169.254.169.254 https://10.0.2.2; do
  fi
 done
 # Both actual GUI applications must create a window in the installed session.
-runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority firefox --new-window about:blank > /tmp/firefox-smoke.log 2>&1 &
+# Under ARM software emulation Firefox sometimes exits while starting (v1.0.8
+# and PR #11 runs): start it again, at most twice, and show its log.
+launch_firefox() {
+ runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority firefox --new-window about:blank >> /tmp/firefox-smoke.log 2>&1 &
+}
+launch_firefox
+launches=1
 # Wait for actual windows instead of assuming every emulator opens them in 25s.
 attempt=0
 while [ "$attempt" -lt 150 ]; do
  if runuser -u claude -- env DISPLAY=:0 XAUTHORITY=/home/claude/.Xauthority xwininfo -root -tree > /tmp/windows && grep -qi firefox /tmp/windows && grep -qi claude /tmp/windows; then
   break
  fi
+ if [ "$attempt" -ge 15 ] && [ "$launches" -lt 3 ] && ! pgrep -u claude firefox > /dev/null; then
+  echo "AUDIT: Firefox exited while starting (launch $launches), starting it again"
+  tail -n 20 /tmp/firefox-smoke.log || true
+  launch_firefox
+  launches=$((launches + 1))
+ fi
  attempt=$((attempt + 1))
  sleep 2
 done
+if ! grep -qi firefox /tmp/windows; then
+ echo "AUDIT: no Firefox window after $launches launches"
+ tail -n 40 /tmp/firefox-smoke.log || true
+fi
 ps -u claude -o comm= | grep -i firefox
 ps -u claude -o comm= | grep -i claude
 cat /tmp/windows

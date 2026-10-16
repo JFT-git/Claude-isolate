@@ -99,16 +99,25 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+  # ARM64 never blocks a release or turns a run red: each ARM64 job keeps
+  # going past its own failure, reports ok=true only when it fully succeeded,
+  # and the final ARM64 status job warns (and, for a release, says so in the
+  # release notes). x86_64 jobs stay strict.
   guest-image-arm:
     name: Prepared guest (aarch64)
     needs: test
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 110
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install native image tooling
+        id: tooling
+        continue-on-error: true
+        timeout-minutes: 10
         run: |
           sudo apt-get update
           sudo apt-get install -y libguestfs-tools qemu-utils qemu-system qemu-efi-aarch64 genisoimage gnupg
@@ -116,11 +125,19 @@ jobs:
           # Grant KVM only to the disposable runner user, not all users.
           if [ -e /dev/kvm ]; then sudo chown "$(id -u):$(id -g)" /dev/kvm; fi
       - name: Build signed-vendor preinstalled image
+        id: build
+        if: steps.tooling.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 40
         env:
           IMAGE_ARCH: aarch64
           IMAGE_RELEASE: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v0.3.17' }}
         run: python3 scripts/build_guest_image.py --arch "$IMAGE_ARCH" --release "$IMAGE_RELEASE"
       - name: Boot prepared image and verify desktop and isolation
+        id: boot
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 55
         env:
           IMAGE_ARCH: aarch64
         run: |
@@ -137,6 +154,7 @@ jobs:
           PYCODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
+        continue-on-error: true
         with:
           name: guest-verification-aarch64
           path: |
@@ -144,11 +162,17 @@ jobs:
             reports/guest-boot/*.json
           if-no-files-found: ignore
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: manifest
+        if: steps.boot.outcome == 'success'
+        continue-on-error: true
         with:
           name: guest-manifest-aarch64
           path: dist/guest/guest-image-*.json
           if-no-files-found: error
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: image
+        if: steps.boot.outcome == 'success'
+        continue-on-error: true
         with:
           name: build-guest-aarch64
           path: |
@@ -157,6 +181,14 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.manifest.outcome == 'success' && steps.image.outcome == 'success' }}
+        run: |
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+          [ "$OK" = true ] || echo '::warning title=ARM64::aarch64 guest image failed; see the Prepared guest (aarch64) log and the guest-verification-aarch64 artifact.'
   macos:
     name: Build macOS (${{ matrix.arch }})
     needs: [test, guest-image]
@@ -199,8 +231,11 @@ jobs:
   macos-arm:
     name: Build macOS (arm64)
     needs: [test, guest-image, guest-image-arm]
+    if: needs.guest-image-arm.outputs.ok == 'true'
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 25
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,11 +244,17 @@ jobs:
         with:
           python-version: '3.12'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: manifests
+        continue-on-error: true
         with:
           pattern: guest-manifest-*
           path: .
           merge-multiple: true
       - name: Compile, sign locally, verify and archive
+        id: build
+        if: steps.manifests.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 20
         env:
           TARGET_ARCH: arm64
         run: |
@@ -222,6 +263,9 @@ jobs:
           cd dist
           shasum -a 256 "Claude-isolate-macos-$TARGET_ARCH.zip" > "Claude-isolate-macos-$TARGET_ARCH.zip.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         with:
           name: build-macos-arm64
           path: |
@@ -229,6 +273,14 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.upload.outcome == 'success' }}
+        run: |
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+          [ "$OK" = true ] || echo '::warning title=ARM64::macOS arm64 build failed; see the Build macOS (arm64) log.'
   portable:
     name: Package (${{ matrix.target }})
     needs: [test, guest-image]
@@ -268,8 +320,11 @@ jobs:
   portable-arm:
     name: Package (linux-arm64)
     needs: [test, guest-image, guest-image-arm]
+    if: needs.guest-image-arm.outputs.ok == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    timeout-minutes: 15
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -278,16 +333,25 @@ jobs:
         with:
           python-version: '3.12'
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: manifests
+        continue-on-error: true
         with:
           pattern: guest-manifest-*
           path: .
           merge-multiple: true
       - name: Package tracked source
+        id: build
+        if: steps.manifests.outcome == 'success'
+        continue-on-error: true
+        timeout-minutes: 10
         env:
           TARGET: linux-arm64
         shell: bash
         run: python scripts/package.py --target "$TARGET"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
         with:
           name: build-linux-arm64
           path: |
@@ -295,6 +359,14 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.upload.outcome == 'success' }}
+        run: |
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+          [ "$OK" = true ] || echo '::warning title=ARM64::Linux arm64 package failed; see the Package (linux-arm64) log.'
   windows:
     name: Build and boot Windows (${{ matrix.os }})
     needs: [test, guest-image]
@@ -407,20 +479,29 @@ jobs:
   attach-guest-arm:
     name: Attach aarch64 guest image
     needs: [guest-image-arm, release]
-    if: success() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+      && needs.release.result == 'success' && needs.guest-image-arm.outputs.ok == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: write
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: download
+        continue-on-error: true
         with:
           name: build-guest-aarch64
           path: attach
-      - name: Attach guest image to the existing release
+      - name: Attach to the existing release
+        id: attach
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -429,23 +510,38 @@ jobs:
           cd attach
           sha256sum --check ./*.sha256
           sh "$GITHUB_WORKSPACE/scripts/attach_release_assets.sh" "$RELEASE_TAG" ./*.qcow2 ./*.sha256
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.attach.outcome == 'success' }}
+        run: echo "ok=$OK" >> "$GITHUB_OUTPUT"
   attach-macos-arm:
     name: Attach macOS arm64
     needs: [macos-arm, release]
-    if: success() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+      && needs.release.result == 'success' && needs.macos-arm.outputs.ok == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: download
+        continue-on-error: true
         with:
           name: build-macos-arm64
           path: attach
-      - name: Attach macOS archive to the existing release
+      - name: Attach to the existing release
+        id: attach
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -454,23 +550,38 @@ jobs:
           cd attach
           sha256sum --check ./*.sha256
           sh "$GITHUB_WORKSPACE/scripts/attach_release_assets.sh" "$RELEASE_TAG" ./*.zip ./*.sha256
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.attach.outcome == 'success' }}
+        run: echo "ok=$OK" >> "$GITHUB_OUTPUT"
   attach-portable-arm:
     name: Attach linux-arm64
     needs: [portable-arm, release]
-    if: success() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
+      && needs.release.result == 'success' && needs.portable-arm.outputs.ok == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: write
+    outputs:
+      ok: ${{ steps.result.outputs.ok }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        id: download
+        continue-on-error: true
         with:
           name: build-linux-arm64
           path: attach
-      - name: Attach Linux archive to the existing release
+      - name: Attach to the existing release
+        id: attach
+        if: steps.download.outcome == 'success'
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -479,34 +590,51 @@ jobs:
           cd attach
           sha256sum --check ./*.sha256
           sh "$GITHUB_WORKSPACE/scripts/attach_release_assets.sh" "$RELEASE_TAG" ./*.zip ./*.sha256
-  warn-missing-arm:
-    name: Warn about missing ARM64 builds
-    # The release is published without waiting for ARM64. If any ARM64 build
-    # failed or was not attached, say so at the top of the release notes.
-    needs: [release, attach-guest-arm, attach-macos-arm, attach-portable-arm]
-    if: >-
-      always() && startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'
-      && needs.release.result == 'success'
-      && (needs.attach-guest-arm.result != 'success' || needs.attach-macos-arm.result != 'success' || needs.attach-portable-arm.result != 'success')
+      - name: Result
+        id: result
+        if: always()
+        env:
+          OK: ${{ steps.attach.outcome == 'success' }}
+        run: echo "ok=$OK" >> "$GITHUB_OUTPUT"
+  arm64-status:
+    name: ARM64 status
+    # The only place ARM64 failures surface: a warning on every run and, for a
+    # published release, a warning at the top of its notes. Never fails.
+    needs: [guest-image-arm, macos-arm, portable-arm, release, attach-guest-arm, attach-macos-arm, attach-portable-arm]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write
     steps:
-      - name: Add a warning to the release notes
+      - name: Report missing ARM64 builds
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          GUEST: ${{ needs.attach-guest-arm.result }}
-          MACOS: ${{ needs.attach-macos-arm.result }}
-          LINUX: ${{ needs.attach-portable-arm.result }}
+          PUBLISHED: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push' && needs.release.result == 'success' }}
+          GUEST: ${{ needs.guest-image-arm.outputs.ok }}
+          MACOS: ${{ needs.macos-arm.outputs.ok }}
+          LINUX: ${{ needs.portable-arm.outputs.ok }}
+          ATTACHED_GUEST: ${{ needs.attach-guest-arm.outputs.ok }}
+          ATTACHED_MACOS: ${{ needs.attach-macos-arm.outputs.ok }}
+          ATTACHED_LINUX: ${{ needs.attach-portable-arm.outputs.ok }}
         run: |
+          if [ "$PUBLISHED" = true ]; then
+            GUEST=$ATTACHED_GUEST MACOS=$ATTACHED_MACOS LINUX=$ATTACHED_LINUX
+          fi
           missing=''
-          [ "$GUEST" = success ] || missing="$missing Claude-isolate-guest-aarch64.qcow2"
-          [ "$MACOS" = success ] || missing="$missing Claude-isolate-macos-arm64.zip"
-          [ "$LINUX" = success ] || missing="$missing Claude-isolate-linux-arm64.zip"
+          [ "$GUEST" = true ] || missing="$missing Claude-isolate-guest-aarch64.qcow2"
+          [ "$MACOS" = true ] || missing="$missing Claude-isolate-macos-arm64.zip"
+          [ "$LINUX" = true ] || missing="$missing Claude-isolate-linux-arm64.zip"
+          if [ -z "$missing" ]; then
+            echo 'ARM64 builds: all present.' >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::warning title=ARM64 builds missing::$missing"
+          echo "### ARM64 builds missing:$(printf ' `%s`' $missing)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$PUBLISHED" = true ] || exit 0
           marker='<!-- arm64-missing -->'
           gh release view "$RELEASE_TAG" --json body --jq .body > body.md
           if grep -qF "$marker" body.md; then exit 0; fi

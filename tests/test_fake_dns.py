@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import environment
 import network_transport as transport
+import tls_trust
 
 
 def answer(ip, port=443):
@@ -20,6 +21,9 @@ def answer(ip, port=443):
 class FakeDnsTests(unittest.TestCase):
     def setUp(self):
         transport._doh_cache.clear()
+        # Tests inject the TLS layer through ssl.create_default_context.
+        tls_trust.client_context.cache_clear()
+        self.addCleanup(tls_trust.client_context.cache_clear)
 
     def test_synthetic_dns_replaced_without_connecting_to_fake_address(self):
         for synthetic in ('198.18.0.1', '198.19.255.254'):
