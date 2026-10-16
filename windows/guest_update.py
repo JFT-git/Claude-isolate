@@ -67,9 +67,11 @@ def payload(cfg):
     files.append(dict(path='/etc/nftables.conf',
                       content=(environment.ROOT / 'guest/firewall.nft').read_text(), permissions='0600'))
     from guest_disk import KERNEL_ARGS
+    # Cloud-init enables units only on a guest's first boot: guests prepared
+    # before a unit existed get it enabled here (the clipboard bridge since 0.4.2).
     return dict(files=files, enable=[(unit, 'multi-user.target') for unit in (
         'claude-gateway.service', 'claude-environment-update.service', 'claude-setup.service')]
-        + [('claude-desktop-ready.service', 'graphical.target')],
+        + [(unit, 'graphical.target') for unit in ('claude-desktop-ready.service', 'claude-clipboard-bridge.service')],
         kernel_args=list(KERNEL_ARGS))
 
 
