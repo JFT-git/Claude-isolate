@@ -65,6 +65,36 @@ class GuestUpdateTests(unittest.TestCase):
             self.assertEqual((root / 'etc/environment').read_text(), 'CUSTOM=value\nhttps_proxy="old"\n')
             self.assertFalse((root / 'etc/claude-isolation.nft').exists())
 
+    @unittest.skipIf(os.name == 'nt', 'Unprivileged Windows symlinks are not universally available')
+    def test_update_keeps_units_masked_by_systemctl(self):
+        # Images from 0.3.16 to 1.0.7 ran `systemctl mask snapd.service ...`.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.guest(root)
+            _, cfg = backend.config(root / 'controller')
+            units = root / 'etc/systemd/system'
+            units.mkdir(parents=True)
+            for unit in ('snapd.service', 'snapd.socket', 'snapd.seeded.service', 'lxd-installer.socket', 'pollinate.service'):
+                (units / unit).symlink_to('/dev/null')
+            offline.apply(root, guest_update.payload(cfg))
+            self.assertEqual(os.readlink(units / 'snapd.service'), '/dev/null')
+            self.assertEqual((units / 'snapd.apparmor.service').read_bytes(), b'')
+            self.assertEqual((root / 'etc/claude-isolate/revision').read_text().strip(), guest_update.REVISION)
+
+    @unittest.skipIf(os.name == 'nt', 'Unprivileged Windows symlinks are not universally available')
+    def test_update_rejects_unit_links_other_than_masks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.guest(root)
+            _, cfg = backend.config(root / 'controller')
+            units = root / 'etc/systemd/system'
+            units.mkdir(parents=True)
+            (units / 'snapd.service').symlink_to(root / 'home/claude/.config/preferences.json')
+            with self.assertRaises(ValueError):
+                offline.apply(root, guest_update.payload(cfg))
+            self.assertEqual((root / 'home/claude/.config/preferences.json').read_bytes(), b'{"language":"fr", "theme":"custom"}')
+            self.assertFalse((root / 'etc/claude-isolate/revision').exists())
+
     def transaction(self, temporary):
         data = Path(temporary)
         path, cfg = backend.config(data)

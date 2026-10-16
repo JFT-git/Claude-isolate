@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import sys
 import tempfile
 
@@ -19,6 +20,18 @@ def destination(root, name):
         if component.is_symlink():
             raise ValueError('Update destination contains a symbolic link: ' + name)
     return target
+
+
+def already_masked(root, item):
+    """True for an empty unit file whose unit `systemctl mask` already links to
+    /dev/null. Images up to 1.0.7 masked snapd that way; the empty file the
+    payload carries means the same thing, so the link is left in place."""
+    name = item['path']
+    if item['content'] or not re.fullmatch(r'/etc/systemd/system/[A-Za-z0-9_@.-]+\.(service|socket|timer|path)', name):
+        return False
+    destination(root, '/etc/systemd/system/.check')
+    target = root / name.lstrip('/')
+    return target.is_symlink() and os.readlink(target) == '/dev/null'
 
 
 def apply(root, payload):
@@ -58,7 +71,7 @@ def apply(root, payload):
         elif link.exists():
             raise ValueError('Unexpected enabled unit file: ' + unit)
         links.append((link, expected))
-    files = list(payload['files'])
+    files = [item for item in payload['files'] if not already_masked(root, item)]
     # Preflight every target before making the first change.
     targets = [(destination(root, item['path']), item) for item in files]
     env = destination(root, '/etc/environment')
