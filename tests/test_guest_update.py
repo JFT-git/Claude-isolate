@@ -96,15 +96,17 @@ class GuestUpdateTests(unittest.TestCase):
             self.assertFalse((root / 'etc/claude-isolate/revision').exists())
 
     def test_environment_update_enables_ssh_before_downloading(self):
-        # Guests prepared by 0.3.16-0.4.1 still have preinstall.sh's ssh mask.
+        # Guests prepared before 0.4.2 have ssh masked and no host keys.
         with tempfile.TemporaryDirectory() as temporary:
             _, cfg = backend.config(Path(temporary) / 'controller')
             files = {item['path']: item['content'] for item in guest_update.payload(cfg)['files']}
         script = files['/usr/local/sbin/claude-environment-update']
         download = script.index('apt-get')
-        for command in ('systemctl unmask ssh.service ssh.socket', 'systemctl enable ssh.service ssh.socket',
-                        'systemctl start ssh.socket'):
-            self.assertLess(script.index(command), download)
+        start = script.index('systemctl start ssh.socket')
+        self.assertLess(start, download)
+        for command in ('ssh-keygen -A', 'systemctl unmask ssh.service ssh.socket',
+                        'systemctl enable ssh.service ssh.socket', 'systemctl reset-failed ssh.service ssh.socket'):
+            self.assertLess(script.index(command), start)
 
     def transaction(self, temporary):
         data = Path(temporary)
