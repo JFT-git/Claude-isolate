@@ -108,6 +108,13 @@ class GuestUpdateTests(unittest.TestCase):
                         'systemctl enable ssh.service ssh.socket', 'systemctl reset-failed ssh.service ssh.socket'):
             self.assertLess(script.index(command), start)
 
+    def test_update_installs_packages_that_host_channels_need(self):
+        # Images up to 0.4.1 had neither the SSH server (shared folder) nor xclip (clipboard bridge).
+        script = (environment.ROOT / 'guest/update.sh').read_text()
+        command = script[script.index('install -y'):script.index('apt-get clean')].split()
+        for package in ('openssh-server', 'openssh-sftp-server', 'xclip'):
+            self.assertIn(package, command)
+
     def test_update_enables_every_unit_it_installs(self):
         # Guests prepared before 0.4.2 never ran the runcmd that enables the clipboard bridge.
         with tempfile.TemporaryDirectory() as temporary:
