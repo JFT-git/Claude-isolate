@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import environment
 import network_guard
 import network_transport
+import tls_trust
 
 
 def answer(ip):
@@ -20,6 +21,11 @@ def answer(ip):
 
 
 class SystemVpnTests(unittest.TestCase):
+    def setUp(self):
+        # Tests inject the TLS layer through ssl.create_default_context.
+        tls_trust.client_context.cache_clear()
+        self.addCleanup(tls_trust.client_context.cache_clear)
+
     def test_system_mode_needs_no_local_proxy_port(self):
         cfg = environment.load_config(environment.ROOT / 'environment.example.json')
         self.assertNotIn('proxy_port', cfg)
