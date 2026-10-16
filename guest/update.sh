@@ -20,9 +20,15 @@ if [ "${1:-}" != '--installed' ]; then
     systemctl start ssh.socket 2>/dev/null || true
     CLAUDE_REPOSITORY_PROXY=http://10.0.2.100:7890 /usr/local/sbin/claude-repositories
     apt-get -o DPkg::Lock::Timeout=180 update
+    # The small packages that SSH, the shared folder and the clipboard need go
+    # first. Through a slow gateway the desktop and browser downloads outlasted
+    # a 30-minute attempt, leaving guests prepared before 0.4.2 without xclip.
     apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef \
         -o Dpkg::Options::=--force-confold install -y --no-install-recommends \
-        claude-desktop firefox openssh-client openssh-server openssh-sftp-server xclip nftables curl ca-certificates
+        openssh-client openssh-server openssh-sftp-server xclip nftables curl ca-certificates
+    apt-get -o DPkg::Lock::Timeout=180 -o Dpkg::Options::=--force-confdef \
+        -o Dpkg::Options::=--force-confold install -y --no-install-recommends \
+        claude-desktop firefox
     apt-get clean
 fi
 # Packages can replace their own policy files. Reapply the product's policy,
