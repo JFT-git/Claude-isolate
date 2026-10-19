@@ -280,19 +280,33 @@ def start_environment(path, cfg, offline=False):
     started = time.monotonic()
     watch = None
 
-    def launch():
+    def run(expected_exit_ip=None):
         nonlocal watch
         if not automatic:
-            environment.main(raise_errors=True, offline=offline)
+            environment.main(raise_errors=True, expected_exit_ip=expected_exit_ip, offline=offline)
             return
         watch = StallWatch(cfg)
         try:
             with watch:
-                environment.main(raise_errors=True, offline=offline)
+                environment.main(raise_errors=True, expected_exit_ip=expected_exit_ip, offline=offline)
         finally:
             if watch.stalled:
                 # Only this watch set it; a retry must not be abandoned too.
                 environment.ABORT.clear()
+
+    def launch():
+        nonlocal started
+        try:
+            run()
+        except environment.QemuStalled as error:
+            # QEMU hung before it started the guest; the disk and any saved
+            # state are untouched. A new QEMU process creates new pipes.
+            if getattr(error, 'network_locked', False):
+                raise
+            print('QEMU stalled before opening its control pipe: ' + str(error), file=sys.stderr, flush=True)
+            emit('QEMU завис при запуске. Запускаю его ещё раз; диск и файлы сохранены.', running=False)
+            started = time.monotonic()
+            run(getattr(error, 'initial_exit_ip', None))
 
     try:
         try:

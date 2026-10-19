@@ -776,6 +776,15 @@ class LaunchAbandoned(RuntimeError):
     """The owner of this process asked it to stop the guest it started."""
 
 
+class QemuStalled(RuntimeError):
+    """QEMU on Windows never opened its control pipe, so the guest never ran.
+
+    QEMU creates its pipes one after another and waits for a client on each.
+    A client that connects between CreateNamedPipe and ConnectNamedPipe leaves
+    QEMU waiting for an event that never comes (chardev/char-pipe.c).
+    """
+
+
 # Set in-process by the Windows launcher to abandon its hidden first-run boot
 # (never reachable from the control mailbox, which cannot stop QEMU abruptly).
 ABORT = threading.Event()
@@ -949,7 +958,11 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                             except subprocess.TimeoutExpired:
                                 proc.kill()
                                 proc.wait()
-                            if restore and not (control and control.restored) and not isinstance(error, KeyboardInterrupt):
+                            # A stalled QEMU never loaded the saved state; the
+                            # caller starts QEMU again and the state is kept.
+                            stalled = isinstance(error, QemuStalled) and not exited
+                            if (restore and not stalled and not (control and control.restored)
+                                    and not isinstance(error, KeyboardInterrupt)):
                                 print('Restore failed: ' + type(error).__name__ + ': ' + str(error),
                                       file=sys.stderr, flush=True)
                                 raise RestoreFailed('Сохранённое состояние Linux не загрузилось') from error
@@ -960,7 +973,7 @@ def main(*, raise_errors=False, expected_exit_ip=None, offline=False):
                                 failure = QemuFailed(exited, cmd, qemu_detail(qemu_output))
                                 failure.__cause__ = error
                                 error = failure
-                            if isinstance(error, (QemuFailed, LaunchAbandoned)):
+                            if isinstance(error, (QemuFailed, LaunchAbandoned, QemuStalled)):
                                 error.initial_exit_ip = result['ip'] if result else None
                                 error.network_locked = lease.with_suffix('.revoked').exists()
                                 raise error

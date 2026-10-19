@@ -184,6 +184,91 @@ class EarlyQemuExitTests(unittest.TestCase):
         self.assertIn('0xC0000005', str(environment.QemuFailed(3221225477, ['qemu'])))
 
 
+class StalledQemuTests(unittest.TestCase):
+    """QEMU hangs for good if a client connects between CreateNamedPipe and ConnectNamedPipe."""
+
+    def start(self, failures):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        path, cfg = backend.config(Path(temporary.name))
+        calls = []
+
+        def main(**kwargs):
+            calls.append(kwargs)
+            if failures:
+                raise failures.pop(0)
+
+        with patch.object(backend, 'acceleration', return_value='tcg'), \
+             patch.object(environment, 'main', side_effect=main), \
+             patch.object(sys, 'argv', ['core']), patch.object(backend, 'emit'):
+            backend.start_environment(path, cfg)
+        return calls
+
+    def stalled(self, network_locked=False):
+        error = environment.QemuStalled('Windows QMP pipe did not start')
+        error.initial_exit_ip, error.network_locked = '8.8.8.8', network_locked
+        return error
+
+    def test_qemu_that_never_opened_its_pipe_is_started_once_more(self):
+        calls = self.start([self.stalled()])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1]['expected_exit_ip'], '8.8.8.8')
+
+    def test_second_stall_and_network_change_are_reported(self):
+        with self.assertRaises(environment.QemuStalled):
+            self.start([self.stalled(), self.stalled()])
+        with self.assertRaises(environment.QemuStalled):
+            self.start([self.stalled(network_locked=True)])
+
+    def test_stall_keeps_the_saved_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, cfg = backend.config(Path(temporary))
+            Path(cfg['disk']).write_bytes(b'disk')
+            Path(cfg['seed']).write_bytes(b'seed')
+            process = Mock()
+            process.poll.return_value = None
+            control = Mock()
+            control.wait_ready.side_effect = environment.QemuStalled('Windows QMP pipe did not start')
+            control.restored = False
+            with patch.object(sys, 'argv', ['core', 'start', '--config', str(path)]), \
+                 patch.object(environment, 'command', return_value=['qemu']), \
+                 patch.object(environment, 'choose_ssh_port', return_value=False), \
+                 patch.object(environment.platform, 'system', return_value='Windows'), \
+                 patch.object(environment.subprocess, 'Popen', return_value=process), \
+                 patch.object(state, 'usable', return_value=True), \
+                 patch('windows.control.Control', return_value=control), \
+                 patch('windows.serial_gateway.Gateway'), \
+                 patch('windows.clipboard_bridge.ClipboardBridge'), \
+                 patch('windows.shared_sync.SharedSync'):
+                # Not RestoreFailed, which would discard the saved state.
+                with self.assertRaises(environment.QemuStalled):
+                    environment.main(raise_errors=True, offline=True)
+            process.terminate.assert_called_once()
+
+    def test_control_reports_a_pipe_that_never_appeared_as_a_stall(self):
+        from windows.control import Control
+
+        def missing(path):
+            raise FileNotFoundError(path)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            process = Mock()
+            process.poll.return_value = None
+            owner = Control({'disk': str(Path(temporary) / 'disk'), 'qmp_pipe': 'claude-isolate-' + 'ab' * 16},
+                            process, connector=missing)
+            with patch('windows.control.PIPE_TIMEOUT', 0):
+                owner.run()
+            self.assertIsInstance(owner.error, environment.QemuStalled)
+            with self.assertRaises(environment.QemuStalled):
+                owner.wait_ready(1)
+            # Once connected, a slow answer is not a stall: QEMU may run the guest.
+            owner.error, owner.connected = None, True
+            with patch('windows.control.time.monotonic', side_effect=[0, 100]), \
+                 self.assertRaises(RuntimeError) as caught:
+                owner.wait_ready(1)
+            self.assertNotIsInstance(caught.exception, environment.QemuStalled)
+
+
 class SshPortTests(unittest.TestCase):
     def test_a_busy_port_is_replaced_and_a_free_one_is_kept(self):
         with socket.socket() as holder:

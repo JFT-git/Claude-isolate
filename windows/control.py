@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 
+from environment import QemuStalled
 from network_guard import read_state, write_state
 from session_lock import exclusive
 from windows.pipe import NamedPipe
@@ -129,6 +130,8 @@ class Control:
         self.session = uuid.uuid4().hex
         self.stop = threading.Event()
         self.ready = threading.Event()
+        # True once this owner holds QEMU's control pipe.
+        self.connected = False
         self.error = None
         self.replies = queue.Queue(maxsize=128)
         self.reader = None
@@ -154,7 +157,8 @@ class Control:
                     raise RuntimeError(qemu_exit_message(self.process.returncode, self.output_path))
                 return False
             if self.error:
-                raise RuntimeError('Не удалось открыть канал управления QEMU: ' + str(self.error))
+                failure = QemuStalled if isinstance(self.error, QemuStalled) else RuntimeError
+                raise failure('Не удалось открыть канал управления QEMU: ' + str(self.error))
             if time.monotonic() >= deadline:
                 if self.process.poll() is not None:
                     if self.process.returncode:
@@ -164,7 +168,7 @@ class Control:
                 message = 'QEMU не подготовил канал управления вовремя'
                 if detail:
                     message += ': ' + (detail[-1800:] if len(detail) > 1800 else detail)
-                raise RuntimeError(message)
+                raise (RuntimeError if self.connected else QemuStalled)(message)
         return True
 
     def read_replies(self, pipe):
@@ -357,10 +361,11 @@ class Control:
             while not self.stop.is_set() and self.process.poll() is None:
                 try:
                     pipe = self.connector('\\\\.\\pipe\\' + self.cfg['qmp_pipe'])
+                    self.connected = True
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
-                        raise RuntimeError('Windows QMP pipe did not start')
+                        raise QemuStalled('Windows QMP pipe did not start')
                     self.stop.wait(.05)
             if pipe:
                 self.serve(pipe)
