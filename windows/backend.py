@@ -552,7 +552,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--version', action='version', version='Claude Isolate ' + VERSION)
     parser.add_argument('action', choices=['prepare', 'upgrade', 'start', 'stop', 'suspend', 'resources-auto', *RESOURCE_PROFILES,
-                                         'accel-auto', 'accel-tcg', 'accel-whpx'])
+                                         'accel-auto', 'accel-tcg', 'accel-whpx',
+                                         'hypervisor-status', 'hypervisor-enable'])
     parser.add_argument('--data', type=Path, required=True)
     parser.add_argument('--log', type=Path, help='Installer update log (UTF-8)')
     parser.add_argument('--start-gate', action='store_true')
@@ -563,6 +564,15 @@ def main():
     try:
         if args.start_gate and sys.stdin.readline().strip() != 'GO':
             raise RuntimeError('Запуск отменён контроллером')
+        if args.action.startswith('hypervisor-'):
+            # The installer reads the exit code. The enable action runs elevated.
+            from windows import hypervisor
+            if args.action == 'hypervisor-status':
+                code = hypervisor.status(acceleration() == 'whpx', platform.machine())
+            else:
+                code = hypervisor.enable(log=lambda text: print(text, file=sys.stderr, flush=True))
+            emit('Аппаратная виртуализация Windows: ' + hypervisor.CODES[code], hypervisor=hypervisor.CODES[code])
+            raise SystemExit(code)
         data = args.data.resolve()
         # Installing the controller for the first time must not download or
         # create a guest; only an existing environment needs installer updates.
