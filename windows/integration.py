@@ -22,7 +22,7 @@ from windows import backend
 from windows import gnupg
 from windows.job import Job
 from windows.serial_gateway import boot_command
-from windows.control import paths as control_paths
+from windows.control import PIPE_TIMEOUT, paths as control_paths
 from windows.guest_update import REVISION
 
 PROBE = '''import concurrent.futures, hashlib, http.client, socket, ssl, time
@@ -406,7 +406,9 @@ def run_guest(core, path, cfg, report, desktop):
             process.stdin.write(b'GO\n')
             process.stdin.flush()
             process.stdin.close()
-            deadline = time.monotonic() + 120
+            # The launcher starts a QEMU that stalled before opening its pipes
+            # once more after PIPE_TIMEOUT.
+            deadline = time.monotonic() + 120 + PIPE_TIMEOUT
             while True:
                 try:
                     boot = Path(cfg['boot_log']).read_text(encoding='utf-8', errors='replace')
