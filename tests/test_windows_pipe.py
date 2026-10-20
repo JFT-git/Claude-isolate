@@ -3,13 +3,14 @@ import ctypes
 import importlib.util
 from ctypes import wintypes
 import os
+import socket
 import threading
 import unittest
 import uuid
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from windows.pipe import NamedPipe, Overlapped, SETTLE_SECONDS, api, gateway_pipe, is_wine, WinePipe
+from windows.pipe import DrainedPipe, NamedPipe, Overlapped, SETTLE_SECONDS, api, gateway_pipe, is_wine, WinePipe
 
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows named-pipe test')
@@ -211,3 +212,101 @@ class PipePacketTests(unittest.TestCase):
         payload = bytes(range(256)) * 513
         Packetizer(stream).write_all(payload)
         self.assertEqual(received, payload)
+
+
+class SocketPipe:
+    """A full-duplex stream with small buffers, like QEMU's pipe."""
+    def __init__(self, sock):
+        self.sock, self.closed = sock, False
+
+    def recv(self, count):
+        return self.sock.recv(count)
+
+    def send(self, data):
+        return self.sock.send(data)
+
+    def close(self):
+        self.closed = True
+        self.sock.close()
+
+
+class DrainedPipeTests(unittest.TestCase):
+    """QEMU blocks while it writes and reads only between writes."""
+    def pair(self):
+        ours, theirs = socket.socketpair()
+        for sock in (ours, theirs):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        self.addCleanup(theirs.close)
+        return ours, theirs
+
+    def test_peer_write_completes_while_the_reader_is_sending(self):
+        ours, theirs = self.pair()
+        payload = os.urandom(4 * 1024 * 1024)
+        echoed = bytearray()
+        def qemu():
+            theirs.sendall(payload)
+            while len(echoed) < len(payload):
+                chunk = theirs.recv(65536)
+                if not chunk:
+                    break
+                echoed.extend(chunk)
+        peer = threading.Thread(target=qemu, daemon=True)
+        pipe = DrainedPipe(SocketPipe(ours))
+        self.addCleanup(pipe.close)
+        peer.start()
+        def transport():
+            # paramiko's transport thread sends before it reads again.
+            data = payload
+            while data:
+                data = data[pipe.send(data):]
+        sender = threading.Thread(target=transport, daemon=True)
+        sender.start()
+        sender.join(20)
+        self.assertFalse(sender.is_alive(), 'Sending waited for the peer, which waited for a reader')
+        received = bytearray()
+        pipe.settimeout(10)
+        while len(received) < len(payload):
+            received.extend(pipe.recv(1 << 20))
+        peer.join(20)
+        self.assertEqual(received, payload)
+        self.assertEqual(echoed, payload)
+
+    def test_recv_times_out_like_a_socket_and_ends_with_the_pipe(self):
+        ours, theirs = self.pair()
+        pipe = DrainedPipe(SocketPipe(ours))
+        pipe.settimeout(.05)
+        with self.assertRaises(socket.timeout):
+            pipe.recv(10)
+        self.assertEqual(pipe.peek(), 0)
+        theirs.sendall(b'tail')
+        theirs.close()
+        pipe.thread.join(5)
+        self.assertEqual(pipe.peek(), 4)
+        self.assertEqual(pipe.read(10), b'tail')
+        self.assertIsNone(pipe.peek())
+        self.assertEqual(pipe.recv(10), b'')
+        pipe.close()
+        self.assertTrue(pipe.closed and pipe._closed)
+
+    def test_reading_stops_at_the_memory_limit_and_resumes(self):
+        ours, theirs = self.pair()
+        with patch.object(DrainedPipe, 'LIMIT', 8):
+            pipe = DrainedPipe(SocketPipe(ours))
+            self.addCleanup(pipe.close)
+            pipe.settimeout(5)
+            theirs.sendall(b'a' * 8)
+            pipe.recv(0)  # Waits for the first bytes.
+            theirs.sendall(b'b' * 8)
+            threading.Event().wait(.2)
+            self.assertEqual(pipe.peek(), 8)
+            self.assertEqual(pipe.recv(8), b'a' * 8)
+            self.assertEqual(pipe.recv(8), b'b' * 8)
+
+    def test_close_ends_the_reader_thread(self):
+        ours, _ = self.pair()
+        pipe = DrainedPipe(SocketPipe(ours))
+        pipe.close()
+        pipe.thread.join(5)
+        self.assertFalse(pipe.thread.is_alive())
+        self.assertEqual(pipe.recv(10), b'')

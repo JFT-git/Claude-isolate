@@ -14,7 +14,7 @@ import time
 
 import environment
 from windows.control import PIPE_TIMEOUT
-from windows.pipe import gateway_pipe
+from windows.pipe import DrainedPipe, gateway_pipe
 
 PORT_ID = 'gatewayport'
 SYNC_PREFIX = b'\x00CLAUDE-SYNC-'
@@ -259,6 +259,7 @@ class Gateway:
                         raise RuntimeError('Private Windows gateway pipe did not start')
                     self.stop.wait(.2)
             if pipe:
+                pipe = DrainedPipe(pipe)
                 self.sessions(pipe)
         except Exception as error:
             print('Windows private gateway: ' + str(error), file=sys.stderr, flush=True)
