@@ -178,6 +178,8 @@ class WindowsBackendTests(unittest.TestCase):
             with patch.object(environment.platform, 'system', return_value='Windows'):
                 cmd = environment.command(dict(cfg, accelerator='whpx'), check=False)
                 self.assertEqual(cmd[cmd.index('-cpu') + 1], 'qemu64,svm=off')
+                # The in-kernel APIC lost interrupts and froze the guest.
+                self.assertEqual(cmd[cmd.index('-accel') + 1], 'whpx,kernel-irqchip=off')
                 cmd = environment.command(dict(cfg, accelerator='whpx', whpx_cpu='Nehalem'), check=False)
                 self.assertEqual(cmd[cmd.index('-cpu') + 1], 'Nehalem,svm=off')
                 with self.assertRaises(ValueError):

@@ -279,7 +279,12 @@ def command(cfg, check=True):
            '-machine', ('virt' if arch == 'aarch64' else 'q35') + (',dump-guest-core=off' if system == 'Linux' else ''),
            # Nested virtualization is unnecessary for this desktop. qemu64
            # advertises AMD SVM by default, even on an Intel WHPX host.
-           '-accel', 'tcg,thread=multi' if system == 'Windows' and accel == 'tcg' else accel, '-cpu', 'host' if accel in ('hvf', 'kvm') else whpx_cpu + ',svm=off' if accel == 'whpx' else 'max',
+           # WHPX's own APIC loses interrupts under load: QEMU warns "Ignoring
+           # request for interrupt vector 0" and every vCPU halts for good.
+           # QEMU's APIC delivers them.
+           '-accel', ('tcg,thread=multi' if system == 'Windows' and accel == 'tcg'
+                      else 'whpx,kernel-irqchip=off' if accel == 'whpx' else accel),
+           '-cpu', 'host' if accel in ('hvf', 'kvm') else whpx_cpu + ',svm=off' if accel == 'whpx' else 'max',
            '-m', str(cfg['memory_mb']), '-smp', str(cfg['cpus']),
            '-drive', f'file={qemu_path(openable(cfg["disk"]))},if=virtio,format=qcow2,discard=unmap,detect-zeroes=unmap,node-name=claude-disk',
            '-drive', f'file={qemu_path(openable(cfg["seed"]))},if=virtio,format=raw,readonly=on',
