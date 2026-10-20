@@ -227,6 +227,11 @@ class SocketPipe:
 
     def close(self):
         self.closed = True
+        # Linux does not wake a blocked recv() when another thread closes.
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         self.sock.close()
 
 
