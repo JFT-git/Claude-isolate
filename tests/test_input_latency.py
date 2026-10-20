@@ -167,8 +167,13 @@ class _Pipe:
     def peek(self):
         return False
 
+    def recv(self, _size):
+        return b''
+
     def write(self, data):
         return len(data)
+
+    send = write
 
     def close(self):
         self.closed = True

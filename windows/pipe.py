@@ -7,6 +7,11 @@ import socket
 import threading
 import time
 
+# QEMU hangs for good if a client connects between its CreateNamedPipe and
+# ConnectNamedPipe calls (environment.QemuStalled). A client that has seen
+# the new pipe waits this long, so QEMU is waiting before it connects.
+SETTLE_SECONDS = .25
+
 
 class Overlapped(ctypes.Structure):
     _fields_ = [('Internal', ctypes.c_size_t), ('InternalHigh', ctypes.c_size_t),
@@ -35,6 +40,8 @@ def api():
     library.PeekNamedPipe.restype = wintypes.BOOL
     library.CloseHandle.argtypes = [handle]
     library.CloseHandle.restype = wintypes.BOOL
+    library.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, dword]
+    library.WaitNamedPipeW.restype = wintypes.BOOL
     return library
 
 
@@ -42,6 +49,10 @@ class NamedPipe:
     def __init__(self, path=None, *, handle=None):
         self.api = api()
         if handle is None:
+            # WaitNamedPipe sees the pipe without connecting to it.
+            if not self.api.WaitNamedPipeW(path, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            time.sleep(SETTLE_SECONDS)
             # A synchronous FILE_OBJECT serializes even duplicated handles.
             # FILE_FLAG_OVERLAPPED allows independent reads and writes; each
             # operation owns its own OVERLAPPED structure and completion event.
@@ -176,6 +187,83 @@ class NamedPipe:
             finally:
                 self.writer_lock.release()
                 self.reader_lock.release()
+
+
+class DrainedPipe:
+    """Read a QEMU pipe on a thread of its own so QEMU can always write.
+
+    QEMU writes to a Windows pipe synchronously while it holds its global
+    lock, and the pipe buffers only 2048 bytes. A reader that is itself
+    waiting to send (paramiko's transport thread answers requests and
+    confirms channels) never reads again: QEMU waits for it, it waits for
+    QEMU, and the whole VM stops. Received bytes wait here instead.
+    """
+    LIMIT = 64 * 1024 * 1024
+
+    def __init__(self, pipe):
+        self.pipe = pipe
+        self.buffer = bytearray()
+        self.ended = False
+        self.timeout = None
+        self.ready = threading.Condition()
+        self.thread = threading.Thread(target=self.pump, daemon=True)
+        self.thread.start()
+
+    def pump(self):
+        try:
+            while True:
+                with self.ready:
+                    # A bound for memory only; SSH windows keep it far away.
+                    while len(self.buffer) >= self.LIMIT and not self.pipe.closed:
+                        self.ready.wait(1)
+                data = self.pipe.recv(65536)
+                if not data:
+                    break
+                with self.ready:
+                    self.buffer += data
+                    self.ready.notify_all()
+        except OSError:
+            pass
+        finally:
+            with self.ready:
+                self.ended = True
+                self.ready.notify_all()
+
+    @property
+    def closed(self):
+        return self.pipe.closed
+
+    @property
+    def _closed(self):
+        return self.closed
+
+    def peek(self):
+        """Bytes received and not read yet; None once the pipe has ended."""
+        with self.ready:
+            return len(self.buffer) or (None if self.ended else 0)
+
+    def recv(self, count):
+        with self.ready:
+            if not self.ready.wait_for(lambda: self.buffer or self.ended, self.timeout):
+                raise socket.timeout('timed out')
+            data = bytes(self.buffer[:count])
+            del self.buffer[:count]
+            self.ready.notify_all()
+            return data
+
+    def send(self, data):
+        return self.pipe.send(data)
+
+    read = recv
+    write = send
+
+    def settimeout(self, value):
+        self.timeout = value
+
+    def close(self):
+        self.pipe.close()
+        with self.ready:
+            self.ready.notify_all()
 
 
 @lru_cache(maxsize=1)

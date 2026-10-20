@@ -15,8 +15,12 @@ class _Pipe:
     def read(self, _size):
         return b''
 
+    recv = read
+
     def write(self, data):
         return len(data)
+
+    send = write
 
     def close(self):
         self.closed = True

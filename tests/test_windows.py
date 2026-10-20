@@ -172,6 +172,13 @@ class WindowsBackendTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 backend.select_acceleration({'acceleration_mode': 'whpx,ssd=off'})
 
+    def test_hardware_mode_without_a_running_hypervisor_asks_for_a_restart(self):
+        with patch.object(backend, 'acceleration', return_value='tcg'):
+            with self.assertRaisesRegex(RuntimeError, 'перезагрузите компьютер'):
+                backend.select_acceleration({'acceleration_mode': 'whpx'})
+        with patch.object(backend, 'acceleration', return_value='whpx'):
+            self.assertEqual(backend.select_acceleration({'acceleration_mode': 'whpx'}), 'whpx')
+
     def test_whpx_does_not_advertise_nested_amd_virtualization(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, cfg = backend.config(Path(temporary))
@@ -252,6 +259,20 @@ class WindowsBackendTests(unittest.TestCase):
         self.assertTrue(all(gateway.capacity.acquire(blocking=False) for _ in range(64)))
         self.assertFalse(gateway.capacity.acquire(blocking=False))
 
+    def test_gateway_reads_the_qemu_pipe_on_a_thread_of_its_own(self):
+        from windows.pipe import DrainedPipe
+        from windows.serial_gateway import Gateway
+        gateway = Gateway({'network_mode': 'system', 'web_access': 'public', 'qmp_pipe': 'test'}, {})
+        pipe = Mock(closed=False)
+        pipe.recv.return_value = b''
+        streams = []
+        with patch('windows.serial_gateway.gateway_pipe', return_value=pipe), \
+             patch.object(Gateway, 'sessions', lambda self, stream: streams.append(stream)):
+            gateway.run()
+        self.assertIsInstance(streams[0], DrainedPipe)
+        self.assertIs(streams[0].pipe, pipe)
+        pipe.close.assert_called_once()
+
     def test_session_stream_strips_repeated_marker_and_ends_on_a_new_session(self):
         from windows.serial_gateway import SessionStream
         nonce, other = b'a' * 32, b'b' * 32
@@ -283,6 +304,7 @@ class WindowsBackendTests(unittest.TestCase):
         import socket
         import threading
         import paramiko
+        from windows.pipe import DrainedPipe
         from windows.serial_gateway import Gateway, SessionStream
         spec = importlib.util.spec_from_file_location('serial_stream', environment.ROOT / 'guest/serial-stream.py')
         guest = importlib.util.module_from_spec(spec)
@@ -307,7 +329,8 @@ class WindowsBackendTests(unittest.TestCase):
                 self.sock.close()
 
         server, client = socket.socketpair()
-        stream = Serial(server)
+        # Gateway.run drains QEMU's pipe on a thread of its own.
+        stream = DrainedPipe(Serial(server))
         gateway = Gateway({'network_mode': 'system', 'web_access': 'public'},
                           dict(os.environ, CLAUDE_NETWORK_LEASE=''))
         thread = threading.Thread(target=gateway.sessions, args=(stream,), daemon=True)

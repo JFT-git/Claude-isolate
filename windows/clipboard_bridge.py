@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from windows.clipboard_framing import TEXT, PNG, pack_text, pack_png, parse
 from windows.clipboard_image import dib_to_png, png_to_dib
 from windows.control import PIPE_TIMEOUT
-from windows.pipe import gateway_pipe
+from windows.pipe import DrainedPipe, gateway_pipe
 
 CF_UNICODETEXT = 13
 CF_DIB = 8
@@ -39,7 +39,9 @@ class ClipboardBridge:
             path = '\\\\.\\pipe\\' + self.cfg['qmp_pipe'] + '-clipboard'
             while not self.stop.is_set():
                 try:
-                    pipe = gateway_pipe(path)
+                    # QEMU stops the VM while a guest clipboard write waits
+                    # for this loop, which reads only every 0.3 s.
+                    pipe = DrainedPipe(gateway_pipe(path))
                     break
                 except OSError:
                     if time.monotonic() >= deadline:
@@ -55,8 +57,9 @@ class ClipboardBridge:
             checked = 0.0
             while not self.stop.is_set() and not pipe.closed:
                 try:
-                    if pipe.peek():
-                        chunk = pipe.read(65536)
+                    available = pipe.peek()
+                    if available:
+                        chunk = pipe.read(available)
                         if not chunk:
                             break
                         messages, carry = parse(carry, chunk)
