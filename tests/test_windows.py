@@ -172,6 +172,13 @@ class WindowsBackendTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 backend.select_acceleration({'acceleration_mode': 'whpx,ssd=off'})
 
+    def test_hardware_mode_without_a_running_hypervisor_asks_for_a_restart(self):
+        with patch.object(backend, 'acceleration', return_value='tcg'):
+            with self.assertRaisesRegex(RuntimeError, 'перезагрузите компьютер'):
+                backend.select_acceleration({'acceleration_mode': 'whpx'})
+        with patch.object(backend, 'acceleration', return_value='whpx'):
+            self.assertEqual(backend.select_acceleration({'acceleration_mode': 'whpx'}), 'whpx')
+
     def test_whpx_does_not_advertise_nested_amd_virtualization(self):
         with tempfile.TemporaryDirectory() as temporary:
             _, cfg = backend.config(Path(temporary))

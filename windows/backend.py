@@ -205,6 +205,12 @@ def select_acceleration(cfg):
     mode = cfg.get('acceleration_mode', 'auto')
     if mode not in ACCELERATION_MODES:
         raise ValueError('Неверный режим ускорения')
+    if mode == 'whpx' and acceleration() != 'whpx':
+        # QEMU checks the same capability and fails with "WHPX: No
+        # accelerator found ... No space left on device".
+        raise RuntimeError('Аппаратная виртуализация Windows сейчас не работает. Если её только что '
+                           'включили, перезагрузите компьютер. Или выберите в настройках «Запуск» '
+                           'значение «Автоматически».')
     if mode != 'auto':
         return mode
     return 'tcg' if cfg.get('whpx_failed') else acceleration()
