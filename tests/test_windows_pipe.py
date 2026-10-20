@@ -7,9 +7,9 @@ import threading
 import unittest
 import uuid
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from windows.pipe import NamedPipe, Overlapped, api, gateway_pipe, is_wine, WinePipe
+from windows.pipe import NamedPipe, Overlapped, SETTLE_SECONDS, api, gateway_pipe, is_wine, WinePipe
 
 
 @unittest.skipUnless(os.name == 'nt', 'Native Windows named-pipe test')
@@ -168,6 +168,31 @@ class GatewayPipeSelectionTests(unittest.TestCase):
                     load.assert_called_once_with('ntdll')
         finally:
             is_wine.cache_clear()
+
+
+class PipeRaceTests(unittest.TestCase):
+    """QEMU hangs if a client connects between CreateNamedPipe and ConnectNamedPipe."""
+
+    def test_client_lets_qemu_start_waiting_before_it_connects(self):
+        calls = []
+        library = SimpleNamespace(WaitNamedPipeW=lambda path, timeout: calls.append(('wait', timeout)) or True,
+                                  CreateFileW=lambda *arguments: calls.append(('connect',)) or 1234)
+        with patch('windows.pipe.api', return_value=library), \
+             patch('windows.pipe.time.sleep', side_effect=lambda seconds: calls.append(('sleep', seconds))):
+            pipe = NamedPipe('\\\\.\\pipe\\claude-isolate-test')
+        self.assertEqual(calls, [('wait', 1), ('sleep', SETTLE_SECONDS), ('connect',)])
+        self.assertEqual(pipe.handle, 1234)
+
+    def test_missing_pipe_is_not_opened(self):
+        library = SimpleNamespace(WaitNamedPipeW=lambda path, timeout: False, CreateFileW=Mock())
+        with patch('windows.pipe.api', return_value=library), \
+             patch('windows.pipe.ctypes.get_last_error', return_value=2, create=True), \
+             patch('windows.pipe.ctypes.WinError', side_effect=FileNotFoundError, create=True), \
+             patch('windows.pipe.time.sleep') as sleep:
+            with self.assertRaises(OSError):
+                NamedPipe('\\\\.\\pipe\\claude-isolate-test')
+        library.CreateFileW.assert_not_called()
+        sleep.assert_not_called()
 
 
 class PipePacketTests(unittest.TestCase):

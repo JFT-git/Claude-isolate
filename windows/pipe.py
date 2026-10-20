@@ -7,6 +7,11 @@ import socket
 import threading
 import time
 
+# QEMU hangs for good if a client connects between its CreateNamedPipe and
+# ConnectNamedPipe calls (environment.QemuStalled). A client that has seen
+# the new pipe waits this long, so QEMU is waiting before it connects.
+SETTLE_SECONDS = .25
+
 
 class Overlapped(ctypes.Structure):
     _fields_ = [('Internal', ctypes.c_size_t), ('InternalHigh', ctypes.c_size_t),
@@ -35,6 +40,8 @@ def api():
     library.PeekNamedPipe.restype = wintypes.BOOL
     library.CloseHandle.argtypes = [handle]
     library.CloseHandle.restype = wintypes.BOOL
+    library.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, dword]
+    library.WaitNamedPipeW.restype = wintypes.BOOL
     return library
 
 
@@ -42,6 +49,10 @@ class NamedPipe:
     def __init__(self, path=None, *, handle=None):
         self.api = api()
         if handle is None:
+            # WaitNamedPipe sees the pipe without connecting to it.
+            if not self.api.WaitNamedPipeW(path, 1):
+                raise ctypes.WinError(ctypes.get_last_error())
+            time.sleep(SETTLE_SECONDS)
             # A synchronous FILE_OBJECT serializes even duplicated handles.
             # FILE_FLAG_OVERLAPPED allows independent reads and writes; each
             # operation owns its own OVERLAPPED structure and completion event.
