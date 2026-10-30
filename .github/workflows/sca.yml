@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
       - run: python -m pip install --require-hashes -r requirements-security.txt
@@ -24,7 +24,7 @@ jobs:
         run: pip-audit --strict --disable-pip --no-deps -r requirements-windows.txt -f json -o reports/pip-audit-windows.json
       - name: Scan source dependencies and secrets
         if: always()
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -33,7 +33,7 @@ jobs:
           exit-code: '1'
           format: json
           output: reports/trivy-source.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: sca-source
@@ -64,14 +64,14 @@ jobs:
           docker run --rm --network none --entrypoint dpkg-query claude-guest-sca:local -s firefox > reports/firefox-package.txt
           cp security/trivy-guest-reviewed.yaml reports/reviewed-findings.yaml
       - name: Generate CycloneDX SBOM
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           format: cyclonedx
           output: reports/guest.cdx.json
           exit-code: '0'
       - name: Preserve unfiltered vulnerability evidence
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           scanners: vuln
@@ -80,7 +80,7 @@ jobs:
           output: reports/guest-vulnerabilities-raw.json
           exit-code: '0'
       - name: Scan all known high/critical vulnerabilities (including unfixed)
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: claude-guest-sca:local
           scanners: vuln
@@ -95,7 +95,7 @@ jobs:
       - name: Explain guest dependency findings
         if: always()
         run: python3 scripts/sca_summary.py reports/guest-vulnerabilities.json
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: sca-guest-${{ matrix.arch }}
